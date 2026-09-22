@@ -16,17 +16,23 @@
         <p class="subtitle">Bilingual Clinical Intake Assistant</p>
       </div>
     </div>
-    <div class="status" id="status">
-      <span class="status-dot" id="statusDot"></span>
-      <span id="statusText">Idle</span>
+    <div class="header-right">
+      <span id="latencyStat" class="latency-stat" hidden></span>
+      <div class="status" id="status">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Idle</span>
+      </div>
     </div>
   </header>
 
   <main id="main">
     <div id="escalationBanner" class="escalation-banner" hidden role="alert">
-      <span class="escalation-icon" aria-hidden="true">&#9888;</span>
+      <span id="escalationIcon" class="escalation-icon" aria-hidden="true">&#9888;</span>
       <div>
-        <strong>Connecting you with a human interpreter.</strong>
+        <strong id="escalationHeadline">Connecting you with a human interpreter</strong>
+        <span id="escalationDots" class="escalation-dots" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </span>
         <p>This case has been flagged as high urgency and requires immediate human attention.</p>
       </div>
     </div>
@@ -51,7 +57,10 @@
     <section class="panel summary-panel" id="summaryPanel" hidden>
       <div class="summary-header">
         <h2>Intake Summary</h2>
-        <span id="urgencyBadge" class="urgency-badge urgency-low">low</span>
+        <div class="summary-header-actions">
+          <span id="urgencyBadge" class="urgency-badge urgency-low">low</span>
+          <button type="button" id="exportPdfButton" class="export-pdf-button">Export as PDF</button>
+        </div>
       </div>
 
       <p id="summaryNote" class="summary-note"></p>
@@ -74,6 +83,12 @@
       <div id="redFlagsSection" class="red-flags-section" hidden>
         <h3>Red Flags</h3>
         <ul id="redFlagsList" class="summary-list red-flags-list"></ul>
+      </div>
+
+      <div id="clinicalNotesSection" class="clinical-notes-section" hidden>
+        <h3>Clinical Notes</h3>
+        <p class="clinical-notes-caveat">AI-generated cross-references for clinician review — not a diagnosis.</p>
+        <ul id="clinicalNotesList" class="summary-list clinical-notes-list"></ul>
       </div>
     </section>
   </main>

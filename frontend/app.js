@@ -15,12 +15,16 @@
     micButton: document.getElementById("micButton"),
     micHint: document.getElementById("micHint"),
     status: document.getElementById("status"),
+    latencyStat: document.getElementById("latencyStat"),
     statusDot: document.getElementById("statusDot"),
     statusText: document.getElementById("statusText"),
     transcriptLog: document.getElementById("transcriptLog"),
     transcriptPlaceholder: document.getElementById("transcriptPlaceholder"),
     partialLine: document.getElementById("partialLine"),
     escalationBanner: document.getElementById("escalationBanner"),
+    escalationHeadline: document.getElementById("escalationHeadline"),
+    escalationDots: document.getElementById("escalationDots"),
+    escalationIcon: document.getElementById("escalationIcon"),
     summaryPanel: document.getElementById("summaryPanel"),
     urgencyBadge: document.getElementById("urgencyBadge"),
     summaryNote: document.getElementById("summaryNote"),
@@ -29,7 +33,10 @@
     allergiesList: document.getElementById("allergiesList"),
     redFlagsSection: document.getElementById("redFlagsSection"),
     redFlagsList: document.getElementById("redFlagsList"),
+    clinicalNotesSection: document.getElementById("clinicalNotesSection"),
+    clinicalNotesList: document.getElementById("clinicalNotesList"),
     ttsAudio: document.getElementById("ttsAudio"),
+    exportPdfButton: document.getElementById("exportPdfButton"),
   };
 
   let ws = null;
@@ -45,6 +52,7 @@
   // message updates it in place instead of appending a duplicate.
   let lastFinalTurnOrder = null;
   let lastFinalLineEl = null;
+  let escalationConnectedTimer = null;
 
   // ---------------------------------------------------------------------
   // Status / UI helpers
@@ -66,7 +74,47 @@
       : "Tap to begin speaking with Sina";
   }
 
-  function appendTranscriptLine(text, turnOrder) {
+  function setConfidencePrompt(wrapperEl, lowConfidence) {
+    let prompt = wrapperEl.querySelector(".confidence-prompt");
+    if (!lowConfidence) {
+      if (prompt) prompt.hidden = true;
+      return;
+    }
+    if (!prompt) {
+      prompt = document.createElement("div");
+      prompt.className = "confidence-prompt";
+      const label = document.createElement("span");
+      label.textContent = "Did I hear that right?";
+      const dismiss = document.createElement("button");
+      dismiss.type = "button";
+      dismiss.className = "confidence-dismiss";
+      dismiss.textContent = "Yes, that's right";
+      dismiss.addEventListener("click", () => {
+        prompt.hidden = true;
+      });
+      prompt.appendChild(label);
+      prompt.appendChild(dismiss);
+      wrapperEl.appendChild(prompt);
+    }
+    prompt.hidden = false;
+  }
+
+  function setLanguageBadge(wrapperEl, languageTag) {
+    let badge = wrapperEl.querySelector(".lang-badge");
+    if (!languageTag) {
+      if (badge) badge.remove();
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "lang-badge";
+      wrapperEl.insertBefore(badge, wrapperEl.firstChild);
+    }
+    badge.textContent = languageTag;
+    badge.className = "lang-badge lang-badge-" + languageTag.toLowerCase().replace("+", "-");
+  }
+
+  function appendTranscriptLine(text, turnOrder, lowConfidence, languageTag) {
     if (!text) return;
     el.transcriptPlaceholder.hidden = true;
 
@@ -79,20 +127,29 @@
       turnOrder === lastFinalTurnOrder &&
       lastFinalLineEl
     ) {
-      lastFinalLineEl.textContent = text;
+      lastFinalLineEl.querySelector(".transcript-line").textContent = text;
+      setConfidencePrompt(lastFinalLineEl, lowConfidence);
+      setLanguageBadge(lastFinalLineEl, languageTag);
       el.transcriptLog.scrollTop = el.transcriptLog.scrollHeight;
       return;
     }
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "transcript-item";
 
     const p = document.createElement("p");
     p.className = "transcript-line";
     p.dir = "auto"; // let the browser pick LTR/RTL per line (mixed Arabic/English)
     p.textContent = text;
-    el.transcriptLog.appendChild(p);
+    wrapper.appendChild(p);
+
+    el.transcriptLog.appendChild(wrapper);
+    setLanguageBadge(wrapper, languageTag);
+    setConfidencePrompt(wrapper, lowConfidence);
     el.transcriptLog.scrollTop = el.transcriptLog.scrollHeight;
 
     lastFinalTurnOrder = turnOrder ?? null;
-    lastFinalLineEl = p;
+    lastFinalLineEl = wrapper;
   }
 
   function setPartial(text) {
@@ -119,6 +176,11 @@
     const summary = payload.summary;
     el.summaryPanel.hidden = false;
 
+    if (typeof payload.processing_time_ms === "number") {
+      el.latencyStat.hidden = false;
+      el.latencyStat.textContent = `Processed in ${(payload.processing_time_ms / 1000).toFixed(1)}s`;
+    }
+
     el.urgencyBadge.textContent = summary.urgency;
     el.urgencyBadge.className = "urgency-badge urgency-" + summary.urgency;
 
@@ -135,14 +197,50 @@
       el.redFlagsSection.hidden = true;
     }
 
+    if (summary.clinical_notes && summary.clinical_notes.length > 0) {
+      el.clinicalNotesSection.hidden = false;
+      renderList(el.clinicalNotesList, summary.clinical_notes);
+    } else {
+      el.clinicalNotesSection.hidden = true;
+    }
+
     if (payload.escalate_to_interpreter) {
       showEscalation();
     }
   }
 
+  // Simulated connecting -> connected sequence for the escalation banner.
+  // There is no real interpreter backend to connect to; this is a UI
+  // affordance so the escalation reads as an active handoff in progress
+  // rather than a static, inert warning label.
+  const ESCALATION_CONNECTING_MS = 2600;
+
   function showEscalation() {
+    // Guard against re-entry: the same high-urgency session can produce
+    // more than one escalation message (a later debounced summary can
+    // still be "high"), so a second call restarts the sequence cleanly
+    // instead of layering a duplicate timer on top of the first.
+    if (escalationConnectedTimer) {
+      clearTimeout(escalationConnectedTimer);
+      escalationConnectedTimer = null;
+    }
+
     el.escalationBanner.hidden = false;
+    el.escalationBanner.classList.remove("connected");
+    el.escalationBanner.classList.add("connecting");
+    el.escalationHeadline.textContent = "Connecting you with a human interpreter";
+    el.escalationDots.hidden = false;
+    el.escalationIcon.innerHTML = "&#9888;"; // warning triangle
     el.escalationBanner.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    escalationConnectedTimer = setTimeout(() => {
+      el.escalationBanner.classList.remove("connecting");
+      el.escalationBanner.classList.add("connected");
+      el.escalationHeadline.textContent = "Interpreter connected";
+      el.escalationDots.hidden = true;
+      el.escalationIcon.innerHTML = "&#10003;"; // checkmark
+      escalationConnectedTimer = null;
+    }, ESCALATION_CONNECTING_MS);
   }
 
   function playBase64Audio(base64, format, context) {
@@ -208,7 +306,7 @@
     switch (msg.type) {
       case "transcript":
         if (msg.is_final) {
-          appendTranscriptLine(msg.text, msg.turn_order);
+          appendTranscriptLine(msg.text, msg.turn_order, msg.low_confidence, msg.language_tag);
           setPartial("");
         } else {
           setPartial(msg.text);
@@ -404,5 +502,12 @@
     } else {
       startRecording();
     }
+  });
+
+  // Native print-to-PDF: a @media print stylesheet isolates the summary
+  // card for a clean printable/saveable intake report, no PDF library
+  // needed for what the browser already does well.
+  el.exportPdfButton.addEventListener("click", () => {
+    window.print();
   });
 })();

@@ -79,6 +79,17 @@ class IntakeSummary(BaseModel):
         "urgency assessment, e.g. 'reports crushing chest pain radiating to left arm'. "
         "Empty if none.",
     )
+    clinical_notes: list[str] = Field(
+        default_factory=list,
+        description="State the clinical IMPLICATION of a connection between "
+        "separately-mentioned facts, not just that the facts co-occurred — e.g. "
+        "patient mentions daily aspirin earlier and chest pain later: write "
+        "'Patient already on aspirin — may increase bleeding risk', NOT 'Patient "
+        "reports aspirin use alongside chest pain.' Only include well-established, "
+        "textbook-level connections (drug-symptom interactions, a medication that "
+        "treats a mentioned condition, an allergy relevant to a mentioned "
+        "medication). Do not speculate or diagnose. Empty if none apply.",
+    )
     summary_note: str = Field(
         description="One or two sentence plain-language summary of the patient's "
         "situation for a clinician, in English."
@@ -90,6 +101,12 @@ class IntakeResult(BaseModel):
 
     summary: IntakeSummary
     escalate_to_interpreter: bool
+    # Wall-clock time for the Gemini call itself (including any retries),
+    # NOT total time since the patient stopped talking — that also includes
+    # the debounce wait, which is separate and already surfaced via the
+    # "Finishing up..." status. Mislabeling this as total response time
+    # would overstate real-time performance.
+    processing_time_ms: float
 
 
 SYSTEM_PROMPT = """\
@@ -105,6 +122,12 @@ just the newest line):
 - allergies: every allergy mentioned
 - urgency: your overall clinical triage judgment given everything said so far
 - red_flags: the specific phrases/findings that justify the urgency level
+- clinical_notes: cross-reference facts mentioned at different points in the
+  conversation when there's a well-established clinical connection between
+  them (e.g. a medication mentioned earlier and a symptom mentioned later
+  that it could affect). Only state connections a textbook would back up;
+  never speculate or diagnose. Leave empty rather than reach for a weak
+  connection.
 - summary_note: a short clinician-facing summary
 
 Urgency guidance (use clinical judgment, err toward caution):
@@ -258,10 +281,13 @@ class LLMPipeline:
     async def summarize(self, transcript: str) -> IntakeResult:
         """Call Gemini Flash to (re)summarize the given transcript, apply the
         escalation rule, and fire the registered callbacks."""
+        start = asyncio.get_event_loop().time()
         summary = await self._extract(transcript)
+        elapsed_ms = (asyncio.get_event_loop().time() - start) * 1000
         result = IntakeResult(
             summary=summary,
             escalate_to_interpreter=(summary.urgency == "high"),
+            processing_time_ms=elapsed_ms,
         )
         self.latest_result = result
 

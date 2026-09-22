@@ -113,6 +113,18 @@ main {
   color: var(--text-muted);
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.latency-stat {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .status {
   display: flex;
   align-items: center;
@@ -173,6 +185,35 @@ main {
 .escalation-icon {
   font-size: 1.4rem;
   line-height: 1;
+}
+
+.escalation-dots {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.escalation-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.35;
+  animation: escalation-dot-pulse 1.1s ease-in-out infinite;
+}
+
+.escalation-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.escalation-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes escalation-dot-pulse {
+  0%, 80%, 100% { opacity: 0.35; }
+  40% { opacity: 1; }
 }
 
 /* ---------- shared panel ---------- */
@@ -299,6 +340,53 @@ main {
   animation: bubble-in 0.16s var(--ease-out);
 }
 
+.lang-badge {
+  display: inline-block;
+  margin-bottom: 3px;
+  padding: 1px 8px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  background: var(--brand-tint);
+  color: var(--brand-dark);
+}
+
+.lang-badge-ar-en {
+  background: var(--urgency-medium-bg);
+  color: var(--urgency-medium-text);
+}
+
+.confidence-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 6px 12px;
+  background: var(--urgency-medium-bg);
+  color: var(--urgency-medium-text);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  animation: bubble-in 0.16s var(--ease-out);
+}
+
+.confidence-dismiss {
+  flex-shrink: 0;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s var(--ease-standard);
+}
+
+.confidence-dismiss:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
 .partial-line {
   margin: 10px 0 0;
   min-height: 1.4em;
@@ -324,6 +412,29 @@ main {
 
 .summary-header h2 {
   margin: 0;
+}
+
+.summary-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.export-pdf-button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--brand-dark);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s var(--ease-standard), border-color 0.15s var(--ease-standard);
+}
+
+.export-pdf-button:hover {
+  background: var(--brand-tint);
+  border-color: var(--brand);
 }
 
 .urgency-badge {
@@ -407,6 +518,25 @@ main {
   border-color: #f1c3bf;
 }
 
+.clinical-notes-section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.clinical-notes-caveat {
+  margin: -2px 0 8px;
+  font-size: 0.78rem;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.clinical-notes-list li {
+  background: var(--urgency-medium-bg);
+  color: var(--urgency-medium-text);
+  border-color: #f3e2bf;
+}
+
 /* ---------- misc ---------- */
 
 @keyframes pulse {
@@ -447,5 +577,34 @@ main {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* Export as PDF: print only the summary card via the browser's native
+   print-to-PDF, not a client-side PDF library. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .summary-panel,
+  .summary-panel * {
+    visibility: visible;
+  }
+  .summary-panel {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    box-shadow: none;
+    border: none;
+  }
+  .export-pdf-button {
+    display: none;
+  }
+  /* Urgency/red-flag colors are clinically meaningful; keep them in print
+     rather than letting the browser strip backgrounds by default. */
+  .summary-panel {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
 }
