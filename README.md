@@ -5,9 +5,11 @@ Arabic and English freely); Sina transcribes, extracts a structured clinical
 summary, and escalates high-urgency cases to a human interpreter.
 
 **Status: fully wired end-to-end and demo-ready.** Backend (STT → LLM → TTS →
-WebSocket server) and frontend are built and live-tested, the demo script is
-written (`demo/demo_script.md`), and the frontend has had an accessibility +
-motion polish pass. Next: record the demo video.
+WebSocket server) and frontend are built and live-tested against real
+recorded voice (not just synthetic test audio), the demo script is written
+(`demo/demo_script.md`), and the frontend has had an accessibility + motion
+polish pass plus six product upgrades (see below). Next: record the demo
+video.
 
 ## Stack
 
@@ -76,6 +78,16 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   NOT a comma-joined string — the docs' prose was misleading; live-testing hit
   a real `error_code 3006` that revealed the actual contract.
 - 16kHz mono PCM16 required.
+- `mode=max_accuracy` (not AssemblyAI's default `balanced`). Default mode
+  favors low latency and was cutting turns mid-sentence on real speech —
+  confirmed by feeding a real recorded voice sample through the pipeline
+  and inspecting the raw `Turn` logs. Verified the param is real (not
+  silently ignored — AssemblyAI doesn't reject unknown query params, so
+  "no connection error" alone proves nothing) by checking it's echoed back
+  in the `Begin` message's `configuration` field.
+- Every `Turn` message is logged (`turn_order`, `end_of_turn`,
+  `end_of_turn_confidence`, `transcript`) — the diagnostic that made the
+  fragmentation bug provable rather than guessed-at.
 
 ### `llm_pipeline.py`
 - `IntakeSummary` Pydantic schema (symptoms, medications, allergies, urgency,
@@ -99,6 +111,26 @@ replies `{"type":"session_ended"}` once safe to close the socket).
 - `flush()` is **idempotent** — caches `_last_summarized_transcript`, skips
   re-calling Gemini if nothing changed since the last summarize. This fixed a
   real bug (see Known Bugs Fixed below).
+- `IntakeSummary.clinical_notes`: cross-references facts mentioned at
+  different points in the conversation (e.g. daily aspirin mentioned early,
+  chest pain mentioned later → "may increase bleeding risk"), not just the
+  facts listed side by side. Prompt explicitly asks for the clinical
+  *implication*, not just the co-occurrence — the first version of the
+  prompt only produced the latter; verified live against the real API
+  after sharpening the field description. Deliberately conservative
+  (well-established connections only, no speculation) and labeled in the
+  UI as "AI-generated cross-references for clinician review — not a
+  diagnosis."
+- `IntakeResult.processing_time_ms`: wall-clock time for the Gemini call
+  itself (including retries), used for the frontend's latency stat.
+  Deliberately does NOT include the debounce wait — that's a separate,
+  intentional delay already surfaced via the "Finishing up..." status, and
+  folding it into a "response time" stat would overstate real-time
+  performance.
+- **Gemini free tier has a *daily* cap too** (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`,
+  20 requests/day for `gemini-3.6-flash`), separate from the 5/min limit
+  above — hit mid-session during testing. Worth knowing before running
+  multiple demo takes in one day.
 
 ### `tts_client.py`
 - Voice: **"Sarah"** (`EXAVITQu4vr4xnSDxMaL`), ElevenLabs' free default voice,
@@ -110,6 +142,10 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   request to sound calmer/slower for a clinical context.
 - Handles mixed Arabic/English text in **one call**, no per-segment splitting
   needed — verified live.
+- A short spoken confirmation ("Got it, I've noted that down.") now plays
+  after every non-escalation summary — TTS was previously wired only for
+  the escalation notice and on-demand `speak` requests, so a normal turn
+  produced no spoken reply at all. Confirmed by ear.
 
 ### `server.py`
 - `SinaSession` class = one instance per WebSocket connection, owns one
@@ -128,6 +164,14 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   Gemini retries exhausted) — otherwise the client never gets its close
   signal and sits on a stale status until its own fallback timeout.
 - Serves `frontend/` as static files at `/static/`, with `/` redirecting there.
+- `transcript` messages also carry `confidence` (average per-word confidence
+  from AssemblyAI's real `words` array) and `language_tag` (`"AR"`/`"EN"`/`"AR+EN"`,
+  from Unicode script detection — AssemblyAI's `Turn` messages have no
+  per-word language field, confirmed by inspecting the raw message schema
+  live, so this replaces a `language_code` field that was dead code all
+  along, always null). `low_confidence` (average word confidence < 0.75,
+  calibrated against real speech) drives the frontend's "did I hear that
+  right?" prompt.
 
 ### Frontend
 - `app.js` downsamples browser mic audio (usually 44.1/48kHz) to 16kHz via
@@ -155,6 +199,24 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   on the mic button (prevents mobile tap-delay), and `overflow-wrap: anywhere`
   on summary/transcript text (Gemini's output isn't length-constrained, so
   long LLM-generated strings shouldn't be able to overflow their containers).
+- **Confidence UI**: a final turn below the confidence threshold gets a
+  "Did I hear that right?" prompt (dismiss-only — no edit-and-resubmit loop
+  back into the Gemini pipeline, which would burn additional scarce
+  free-tier requests per correction; a deliberate scope decision, flagged
+  before building rather than after).
+- **Language tags**: a small AR/EN/AR+EN pill above each transcript bubble.
+- **Escalation animation**: the banner shows an animated "Connecting you
+  with a human interpreter" (pulsing dots) that transitions after ~2.6s to
+  "Interpreter connected" (checkmark). No real interpreter backend exists —
+  this is a UI simulation of the handoff, worth being explicit about in the
+  demo narration so it doesn't read as an overclaim.
+- **Export as PDF**: native `window.print()` + a `@media print` stylesheet
+  that isolates just the summary card — no PDF library, since the browser
+  already does this well. Verified with a real generated PDF, not just the
+  print-preview screen.
+- **Latency stat**: "Processed in Xs" in the header, from
+  `processing_time_ms` (see `llm_pipeline.py` above) — intentionally not
+  labeled as total response time.
 
 ## Known bugs found + fixed (via live testing, not just code review)
 
@@ -180,6 +242,16 @@ replies `{"type":"session_ended"}` once safe to close the socket).
    Known Limitations), the exception propagated before `session_ended` was
    ever sent, leaving the client stuck until its 20s fallback timeout instead
    of transitioning immediately.
+5. **Garbled, fragmented transcription** (found via real voice testing, not
+   synthetic): short, disconnected phrases instead of coherent sentences.
+   Root cause was AssemblyAI's default `mode=balanced` cutting turns too
+   eagerly. Fixed with `mode=max_accuracy` (see `stt_client.py` above);
+   confirmed with real speech that a full bilingual sentence which
+   previously would have fragmented now commits as one coherent final turn.
+6. **No spoken reply after a normal turn** (found via real voice testing):
+   TTS was wired only for the escalation notice, never for a normal
+   completed turn. Fixed by adding a spoken confirmation after every
+   non-escalation summary (see `tts_client.py`/`server.py` above).
 
 ## Known limitations (to mention transparently in the demo)
 
@@ -225,6 +297,15 @@ Every component was verified against **live APIs**, not mocked, and not just
   rendering), and asserting computed styles under
   `prefers-reduced-motion: reduce` to confirm it actually disables the new
   animations rather than just assuming the CSS is correct.
+- Bugs 5–6 and the confidence/language-tag upgrades were verified against a
+  **real recorded human voice sample** (converted to 16kHz mono PCM16 with
+  `ffmpeg`), fed through the actual browser mic-capture pipeline via
+  Chromium's `--use-file-for-fake-audio-capture` — real audio through the
+  real Web Audio API → WebSocket → AssemblyAI → Gemini → ElevenLabs chain,
+  not mocked at any layer. This is what caught that Chromium loops the fake
+  audio file for as long as the mic stays open (a test-harness quirk, not
+  an app bug — duplicate turns from a second replay, fixed by stopping the
+  mic shortly after the clip's natural duration).
 
 **Continue this pattern**: when changing any of these files, re-verify against
 the real API/browser, not just static review — that's how every real bug so
@@ -232,7 +313,9 @@ far was actually found.
 
 ## Next steps
 
-1. Record the demo video following `demo/demo_script.md`.
+1. Record the demo video following `demo/demo_script.md` — mention the
+   simulated interpreter handoff and the free-tier debounce/quota
+   constraints transparently, as the script already does.
 2. Optional polish: AudioWorklet instead of deprecated ScriptProcessorNode;
    consider whether escalation urgency-lag (~13s) needs a UI indicator
    ("analyzing..." state) so it doesn't look like nothing's happening.
