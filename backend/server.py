@@ -30,7 +30,7 @@ Protocol (single WebSocket at /ws/session):
     - {"type": "transcript", "text": ..., "is_final": bool, "language_code": ..., "turn_order": int}
     - {"type": "summary", "summary": {...IntakeSummary...}, "escalate_to_interpreter": bool}
     - {"type": "escalation", "red_flags": [...]}
-    - {"type": "audio", "context": "speak" | "escalation", "format": "mp3", "audio_base64": "..."}
+    - {"type": "audio", "context": "speak" | "escalation" | "confirmation", "format": "mp3", "audio_base64": "..."}
     - {"type": "error", "message": "..."}
 
 Run: uvicorn server:app --reload --port 8000   (from backend/)
@@ -73,6 +73,15 @@ async def root() -> RedirectResponse:
 ESCALATION_MESSAGE = (
     "I'm connecting you with a human interpreter now. Please hold on for a moment."
 )
+
+# Short spoken acknowledgment after a normal (non-escalation) summary, so a
+# voice agent actually responds by voice instead of only updating the screen.
+# Confirmed via live testing that this was never wired anywhere — TTS only
+# fired for escalations and on-demand "speak" requests. Deliberately generic
+# (not a full summary readout): correctness of the readout is already shown
+# on the summary card, and reading unbounded LLM output aloud risks a long,
+# awkward pause after every turn under the free-tier Gemini debounce delay.
+CONFIRMATION_MESSAGE = "Got it, I've noted that down."
 
 
 class SinaSession:
@@ -129,6 +138,14 @@ class SinaSession:
                 "escalate_to_interpreter": result.escalate_to_interpreter,
             }
         )
+        # Escalation already gets its own spoken notice (_send_escalation);
+        # don't also speak the generic confirmation on top of it.
+        if not result.escalate_to_interpreter:
+            try:
+                audio = await self.tts.synthesize(CONFIRMATION_MESSAGE)
+                await self._send_audio(audio, context="confirmation")
+            except Exception:
+                logger.exception("Failed to synthesize confirmation notice")
 
     async def _send_escalation(self, result: IntakeResult) -> None:
         await self._send_json({"type": "escalation", "red_flags": result.summary.red_flags})

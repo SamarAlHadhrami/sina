@@ -145,19 +145,27 @@
     el.escalationBanner.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  function playBase64Audio(base64, format) {
+  function playBase64Audio(base64, format, context) {
+    console.log(`[Sina audio] received "${context}" clip: ${base64.length} base64 chars`);
     const bytes = atob(base64);
     const buf = new Uint8Array(bytes.length);
     for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
     const blob = new Blob([buf], { type: "audio/" + (format || "mp3") });
     const url = URL.createObjectURL(blob);
     el.ttsAudio.src = url;
-    el.ttsAudio.play().catch((err) => {
-      // Autoplay can be blocked in some browsers if not triggered by a
-      // user gesture; the mic button click that started the session
-      // generally satisfies that, but fail quietly either way.
-      console.warn("Could not autoplay Sina's audio:", err);
-    });
+    el.ttsAudio
+      .play()
+      .then(() => console.log(`[Sina audio] play() succeeded for "${context}"`))
+      .catch((err) => {
+        // Autoplay can be blocked in some browsers if not triggered by a
+        // recent-enough user gesture — the mic button click that started
+        // the session may not count as "recent" by the time a delayed
+        // confirmation clip arrives many seconds later. This used to fail
+        // completely silently (console.warn only); log loudly since a
+        // blocked autoplay here is indistinguishable from "no audio was
+        // ever generated" to someone just listening.
+        console.error(`[Sina audio] play() BLOCKED/FAILED for "${context}":`, err);
+      });
     el.ttsAudio.onended = () => URL.revokeObjectURL(url);
   }
 
@@ -217,7 +225,7 @@
         break;
 
       case "audio":
-        playBase64Audio(msg.audio_base64, msg.format);
+        playBase64Audio(msg.audio_base64, msg.format, msg.context);
         break;
 
       case "session_ended":
@@ -301,11 +309,38 @@
     const bufferSize = 4096;
     processorNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
 
+    // Diagnostic only (not sent anywhere): tracks the gap between
+    // consecutive onaudioprocess callbacks to catch audio underruns.
+    // ScriptProcessorNode runs on the main thread, so JS work elsewhere
+    // (e.g. a slow WS message handler) can starve it and create real gaps
+    // in what gets sent to AssemblyAI — logged every ~2s to avoid flooding
+    // the console (this callback fires roughly every 85ms).
+    let chunkCount = 0;
+    let lastChunkAt = performance.now();
+
     processorNode.onaudioprocess = (event) => {
       if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
       const input = event.inputBuffer.getChannelData(0);
       const pcm16 = downsampleTo16kInt16(input, audioContext.sampleRate);
       ws.send(pcm16.buffer);
+
+      const now = performance.now();
+      const gapMs = now - lastChunkAt;
+      const expectedMs = (input.length / audioContext.sampleRate) * 1000;
+      chunkCount++;
+      if (chunkCount % 24 === 0) {
+        console.log(
+          `[Sina audio] chunk #${chunkCount}: ${pcm16.length} samples ` +
+            `(~${expectedMs.toFixed(1)}ms @16kHz), gap since last chunk: ${gapMs.toFixed(1)}ms`
+        );
+      }
+      if (gapMs > expectedMs * 1.5) {
+        console.warn(
+          `[Sina audio] possible capture gap: expected ~${expectedMs.toFixed(1)}ms between ` +
+            `chunks, got ${gapMs.toFixed(1)}ms (chunk #${chunkCount})`
+        );
+      }
+      lastChunkAt = now;
     };
 
     sourceNode.connect(processorNode);

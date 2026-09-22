@@ -40,6 +40,18 @@ ENCODING = "pcm_s16le"             # raw 16-bit little-endian PCM, mono
 SPEECH_MODEL = "universal-3-5-pro"  # only model with Arabic<->English code-switching
 LANGUAGE_CODES = ["ar", "en"]       # steers + restricts output to these two languages
 
+# Default is "balanced", which favors low latency and was confirmed live to
+# cut turns too aggressively on real speech (short, fragmented bubbles
+# instead of coherent sentences). "max_accuracy" waits longer before
+# committing a turn. Verified against the live API by checking the value
+# echoed back in the Begin message's `configuration` field — AssemblyAI
+# does NOT reject unknown query params, so "no error" alone doesn't confirm
+# a param is real; the echo does. Several other turn-detection params
+# (min_turn_silence, max_turn_silence, end_of_turn_confidence_threshold)
+# were tried the same way and are silently ignored for this model; do not
+# add them without re-verifying against the echoed configuration first.
+TURN_DETECTION_MODE = "max_accuracy"
+
 # Called with each raw "Turn" message dict from AssemblyAI.
 TranscriptCallback = Callable[[dict], Awaitable[None]]
 
@@ -84,6 +96,7 @@ class STTClient:
             ("encoding", ENCODING),
             ("speech_model", SPEECH_MODEL),
             ("format_turns", "true"),  # ask AssemblyAI to punctuate/case final turns
+            ("mode", TURN_DETECTION_MODE),
         ]
         # language_codes is a repeated query param, one code per occurrence
         # (a comma-joined single value is rejected by the API), e.g.
@@ -126,6 +139,15 @@ class STTClient:
                 msg_type = msg.get("type")
 
                 if msg_type == "Turn":
+                    logger.info(
+                        "Turn turn_order=%s end_of_turn=%s eot_confidence=%s "
+                        "formatted=%s transcript=%r",
+                        msg.get("turn_order"),
+                        msg.get("end_of_turn"),
+                        msg.get("end_of_turn_confidence"),
+                        msg.get("turn_is_formatted"),
+                        msg.get("transcript"),
+                    )
                     if self._on_turn:
                         await self._on_turn(msg)
                 elif msg_type == "Termination":
@@ -145,6 +167,9 @@ class STTClient:
         """
         if not self._ws:
             raise RuntimeError("STTClient.connect() must be awaited before sending audio")
+        # 16-bit mono PCM: 2 bytes/sample at SAMPLE_RATE samples/sec.
+        chunk_ms = (len(pcm_chunk) / 2 / SAMPLE_RATE) * 1000
+        logger.debug("send_audio chunk: %d bytes (%.1fms)", len(pcm_chunk), chunk_ms)
         await self._ws.send(pcm_chunk)
 
     async def close(self) -> None:
