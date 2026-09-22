@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to main content</a>
   <header class="app-header">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"></span>
@@ -21,7 +22,7 @@
     </div>
   </header>
 
-  <main>
+  <main id="main">
     <div id="escalationBanner" class="escalation-banner" hidden role="alert">
       <span class="escalation-icon" aria-hidden="true">&#9888;</span>
       <div>
@@ -31,7 +32,7 @@
     </div>
 
     <section class="panel mic-panel">
-      <button id="micButton" class="mic-button" type="button" aria-pressed="false">
+      <button id="micButton" class="mic-button" type="button" aria-pressed="false" aria-label="Start speaking with Sina">
         <span class="mic-icon" aria-hidden="true"></span>
       </button>
       <p class="mic-hint" id="micHint">Tap to begin speaking with Sina</p>

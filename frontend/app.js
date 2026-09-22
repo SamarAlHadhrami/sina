@@ -57,6 +57,10 @@
 
   function setMicPressed(pressed) {
     el.micButton.setAttribute("aria-pressed", pressed ? "true" : "false");
+    el.micButton.setAttribute(
+      "aria-label",
+      pressed ? "Stop speaking with Sina" : "Start speaking with Sina"
+    );
     el.micHint.textContent = pressed
       ? "Listening — tap again to stop"
       : "Tap to begin speaking with Sina";

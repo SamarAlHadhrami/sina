@@ -23,10 +23,30 @@
 
   --radius: 14px;
   --shadow: 0 1px 3px rgba(31, 45, 45, 0.08), 0 6px 20px rgba(31, 45, 45, 0.06);
+
+  /* Restrained, professional easing — no bounce/overshoot (Emil/Jakub). */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 * {
   box-sizing: border-box;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  background: var(--brand-dark);
+  color: white;
+  padding: 10px 16px;
+  border-radius: 0 0 8px 0;
+  z-index: 10;
+}
+
+.skip-link:focus {
+  left: 0;
+  top: 0;
 }
 
 /* The [hidden] attribute must always win over any element's own display
@@ -193,8 +213,10 @@ main {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s ease, transform 0.15s ease;
+  transition: background 0.15s var(--ease-standard), transform 0.15s var(--ease-standard),
+    box-shadow 0.2s var(--ease-standard);
   box-shadow: 0 4px 14px rgba(47, 110, 106, 0.35);
+  touch-action: manipulation;
 }
 
 .mic-button:hover {
@@ -271,6 +293,10 @@ main {
   background: var(--brand-tint);
   border-radius: 10px;
   font-size: 0.95rem;
+  overflow-wrap: anywhere;
+  /* Transcript bubbles appear frequently within a session — keep the
+     entrance fast and minimal (Emil's frequency rule), not decorative. */
+  animation: bubble-in 0.16s var(--ease-out);
 }
 
 .partial-line {
@@ -282,6 +308,12 @@ main {
 }
 
 /* ---------- summary card ---------- */
+
+.summary-panel {
+  /* Rare, once-per-session moment — the fuller "materializing" entrance
+     (Jakub) is warranted here in a way it isn't for the transcript log. */
+  animation: card-in 0.34s var(--ease-out);
+}
 
 .summary-header {
   display: flex;
@@ -322,6 +354,7 @@ main {
   color: var(--text-muted);
   font-size: 0.92rem;
   margin: 0 0 18px;
+  overflow-wrap: anywhere;
 }
 
 .summary-grid {
@@ -353,6 +386,7 @@ main {
   border-radius: 8px;
   padding: 6px 10px;
   font-size: 0.88rem;
+  overflow-wrap: anywhere;
 }
 
 .summary-list.empty li {
@@ -386,8 +420,32 @@ main {
   100% { box-shadow: 0 0 0 0 rgba(179, 38, 30, 0); }
 }
 
+@keyframes bubble-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(10px); filter: blur(4px); }
+  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+
 @media (max-width: 480px) {
   .summary-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Motion is never required to understand app state — every animation here
+   is decorative polish on top of a text/color change that already
+   communicates the same thing, so it's safe to fully disable. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

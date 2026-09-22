@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import AsyncIterator, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 from elevenlabs.client import AsyncElevenLabs
@@ -73,11 +73,6 @@ class TTSClient:
         tts = TTSClient()
         audio_bytes = await tts.synthesize("I understand, let me note that down.")
         # audio_bytes is a complete MP3 file, playable directly by the frontend.
-
-        # Or, for lower time-to-first-audio (e.g. piping straight to a
-        # WebSocket/audio element as it arrives):
-        async for chunk in tts.synthesize_stream("..."):
-            ...
     """
 
     def __init__(
@@ -119,24 +114,3 @@ class TTSClient:
         audio = b"".join(chunks)
         logger.info("Synthesized %d bytes of audio for %d chars of text", len(audio), len(text))
         return audio
-
-    async def synthesize_stream(
-        self, text: str, voice_id: Optional[str] = None
-    ) -> AsyncIterator[bytes]:
-        """
-        Same as synthesize(), but yields audio chunks as they arrive instead
-        of waiting for the full clip — use this when streaming playback to
-        the frontend to minimize perceived latency.
-        """
-        text = text.strip()
-        if not text:
-            raise ValueError("synthesize_stream() called with empty text")
-
-        async for chunk in self._client.text_to_speech.convert(
-            voice_id=voice_id or self.voice_id,
-            text=text,
-            model_id=self.model_id,
-            output_format=self.output_format,
-            voice_settings=self.voice_settings,
-        ):
-            yield chunk

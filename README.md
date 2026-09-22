@@ -5,8 +5,9 @@ Arabic and English freely); Sina transcribes, extracts a structured clinical
 summary, and escalates high-urgency cases to a human interpreter.
 
 **Status: fully wired end-to-end and demo-ready.** Backend (STT → LLM → TTS →
-WebSocket server) and frontend are built and live-tested. Only
-`demo/demo_script.md` is still unwritten.
+WebSocket server) and frontend are built and live-tested, the demo script is
+written (`demo/demo_script.md`), and the frontend has had an accessibility +
+motion polish pass. Next: record the demo video.
 
 ## Stack
 
@@ -36,7 +37,9 @@ frontend/
   app.js            WebSocket client, mic capture + PCM16 downsampling, message handling
   style.css         calm/clinical design, fixed light theme
 demo/
-  demo_script.md    NOT YET WRITTEN — next step
+  demo_script.md    two full-case demo script (low + high urgency), timed under 4 min
+.claude/skills/     project-scoped skills: playwright-cli, documentation-and-adrs,
+                    web-design-guidelines, design-motion-principles, ponytail
 .venv/              local Python venv (installed: fastapi, uvicorn, websockets,
                     python-dotenv, google-genai, elevenlabs)
 ```
@@ -107,7 +110,6 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   request to sound calmer/slower for a clinical context.
 - Handles mixed Arabic/English text in **one call**, no per-segment splitting
   needed — verified live.
-- `synthesize()` (full bytes) and `synthesize_stream()` (async iterator) both provided.
 
 ### `server.py`
 - `SinaSession` class = one instance per WebSocket connection, owns one
@@ -116,6 +118,15 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   mic audio in; JSON text frames both ways (`transcript`, `summary`,
   `escalation`, `audio`, `session_ended`, `error` from server; `speak`, `end`
   from client).
+- `transcript` messages carry AssemblyAI's `turn_order`: AssemblyAI sends an
+  unformatted `end_of_turn=true` Turn immediately, then a formatted one for
+  the **same** `turn_order` a moment later. The frontend uses `turn_order` to
+  update one bubble per turn instead of rendering both as separate lines
+  (see Known bugs found + fixed).
+- The `"end"` handler's `llm.flush()` call is wrapped in try/except so
+  `session_ended` is *always* sent, even if the flush itself fails (e.g.
+  Gemini retries exhausted) — otherwise the client never gets its close
+  signal and sits on a stale status until its own fallback timeout.
 - Serves `frontend/` as static files at `/static/`, with `/` redirecting there.
 
 ### Frontend
@@ -128,6 +139,22 @@ replies `{"type":"session_ended"}` once safe to close the socket).
 - Design: calm teal/off-white palette, fixed light theme (intentional for a
   clinical kiosk feel regardless of device dark-mode setting), red only for
   the escalation state.
+- **Motion**: purposeful, frequency-gated micro-interactions only — transcript
+  bubbles get a fast 160ms entrance (they appear often per session), the
+  summary card gets a fuller 340ms "materializing" entrance with blur (it
+  appears once or twice per session), mic button transitions use a custom
+  easing curve instead of bare `ease`. Deliberately excludes any
+  loud/decorative motion — kept restrained to match the calm, trustworthy
+  feel the design is intentionally going for. All motion respects
+  `prefers-reduced-motion: reduce` (the CSS had no reduced-motion handling
+  at all before this pass — a real accessibility gap, not just a nice-to-have).
+- **Accessibility**: the mic button — the app's core control — was an
+  icon-only button with an `aria-hidden` icon as its only child, giving it no
+  accessible name at all; fixed with a dynamic `aria-label` that toggles with
+  recording state. Added a skip link to `<main>`, `touch-action: manipulation`
+  on the mic button (prevents mobile tap-delay), and `overflow-wrap: anywhere`
+  on summary/transcript text (Gemini's output isn't length-constrained, so
+  long LLM-generated strings shouldn't be able to overflow their containers).
 
 ## Known bugs found + fixed (via live testing, not just code review)
 
@@ -142,6 +169,17 @@ replies `{"type":"session_ended"}` once safe to close the socket).
    wasting a free-tier request and throwing a caught-but-alarming
    `WebSocketDisconnect`. Fixed via explicit `session_ended` ack (client waits
    for it instead of guessing a timeout) + idempotent `flush()`.
+3. **Duplicate transcript bubbles**: AssemblyAI sends an unformatted final
+   Turn immediately, then a formatted one for the same `turn_order` — the
+   frontend was rendering both as separate bubbles instead of one. Fixed by
+   threading `turn_order` through the WS payload and updating the existing
+   bubble in place when it matches the last one rendered.
+4. **Status pill stuck on "Finishing up…"**: the `"end"` handler's
+   `llm.flush()` wasn't wrapped in try/except, so when Gemini's retries were
+   exhausted (a routine occurrence on the free tier, confirmed live — see
+   Known Limitations), the exception propagated before `session_ended` was
+   ever sent, leaving the client stuck until its 20s fallback timeout instead
+   of transitioning immediately.
 
 ## Known limitations (to mention transparently in the demo)
 
@@ -178,7 +216,15 @@ Every component was verified against **live APIs**, not mocked, and not just
 - `frontend/`: Playwright + real Chromium, using
   `--use-file-for-fake-audio-capture=<wav>` to feed a real synthesized-speech
   WAV as the actual browser microphone — full click-mic-button-and-watch-it-work
-  test, not a DOM-only check. This is how both bugs above were caught.
+  test, not a DOM-only check. This is how bugs 1–2 above were caught.
+- Bugs 3–4 above (and the accessibility/motion fixes) were caught the same
+  way, driven against a real running server: a headless Chromium session with
+  the WebSocket intercepted to inject AssemblyAI's actual duplicate-final and
+  session-end message sequences, screenshotting the real DOM output for both
+  the low- and high-urgency cases (including mixed Arabic/English RTL
+  rendering), and asserting computed styles under
+  `prefers-reduced-motion: reduce` to confirm it actually disables the new
+  animations rather than just assuming the CSS is correct.
 
 **Continue this pattern**: when changing any of these files, re-verify against
 the real API/browser, not just static review — that's how every real bug so
@@ -186,7 +232,7 @@ far was actually found.
 
 ## Next steps
 
-1. Write `demo/demo_script.md` (not started).
+1. Record the demo video following `demo/demo_script.md`.
 2. Optional polish: AudioWorklet instead of deprecated ScriptProcessorNode;
    consider whether escalation urgency-lag (~13s) needs a UI indicator
    ("analyzing..." state) so it doesn't look like nothing's happening.
