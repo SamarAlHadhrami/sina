@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "pulsing-dot",
+        "value": "*",
+        "files": [
+          "frontend/index.html"
+        ],
+        "createdAt": "2026-09-22T20:29:55.452Z",
+        "reason": "Two instances, both tied to real state or an explicit user request, not generic decoration: (1) .status-dot pulses only while isRecording is genuinely true (real live mic-capture state, matches the rule's own carve-out for genuinely live data); (2) .escalation-dots pulses only during the user-requested simulated interpreter-connecting sequence (explicit ask: 'a brief simulated connecting animation/countdown... to make the safety mechanism feel like a real product flow'), already disclosed to the user as a UI simulation with no real backend, not silently faking liveness."
+      }
+    ]
+  }
+}
