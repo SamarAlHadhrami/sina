@@ -1,0 +1,234 @@
+"""
+backend/server.py
+
+FastAPI server that wires Sina's pipeline together over one WebSocket per
+patient session:
+
+    browser mic audio  --(binary frames)-->  STTClient (AssemblyAI)
+                                                  |
+                                       on completed turn (debounced)
+                                                  v
+                                            LLMPipeline (Gemini)
+                                                  |
+                                     summary ----------- high urgency
+                                        |                     |
+                                        v                     v
+                                 send JSON summary     send JSON escalation
+                                 to frontend           + spoken TTS notice
+                                                        (TTSClient / ElevenLabs)
+
+Protocol (single WebSocket at /ws/session):
+
+  Client -> Server
+    - binary frame: raw 16kHz mono PCM16 audio chunk (mic input)
+    - text frame (JSON): {"type": "speak", "text": "..."}
+        ask Sina to speak arbitrary text back (e.g. a summary readout button)
+    - text frame (JSON): {"type": "end"}
+        client is ending the session; flush any pending summary
+
+  Server -> Client (all JSON text frames)
+    - {"type": "transcript", "text": ..., "is_final": bool, "language_code": ..., "turn_order": int}
+    - {"type": "summary", "summary": {...IntakeSummary...}, "escalate_to_interpreter": bool}
+    - {"type": "escalation", "red_flags": [...]}
+    - {"type": "audio", "context": "speak" | "escalation", "format": "mp3", "audio_base64": "..."}
+    - {"type": "error", "message": "..."}
+
+Run: uvicorn server:app --reload --port 8000   (from backend/)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import logging
+from pathlib import Path
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+
+from llm_pipeline import IntakeResult, LLMPipeline
+from stt_client import STTClient
+from tts_client import TTSClient
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("sina.server")
+
+app = FastAPI(title="Sina")
+
+# Serve the frontend, if present, so the whole thing can run as one dev server.
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=FRONTEND_DIR, html=True), name="static")
+
+
+@app.get("/")
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/static/")
+
+# Spoken notice when a session is escalated to a human interpreter. Kept
+# short and calm; read with the same TTSClient defaults (Sarah, slowed +
+# stabilized) used everywhere else in the app.
+ESCALATION_MESSAGE = (
+    "I'm connecting you with a human interpreter now. Please hold on for a moment."
+)
+
+
+class SinaSession:
+    """Wires one patient's STTClient -> LLMPipeline -> TTSClient together for
+    the lifetime of a single WebSocket connection."""
+
+    def __init__(self, websocket: WebSocket) -> None:
+        self.ws = websocket
+        self.tts = TTSClient()
+        self.llm = LLMPipeline(on_summary=self._send_summary, on_escalation=self._send_escalation)
+        self.stt = STTClient(on_turn=self._on_stt_turn)
+        self._send_lock = asyncio.Lock()
+
+    async def start(self) -> None:
+        await self.stt.connect()
+
+    async def close(self) -> None:
+        # Flush any transcript that hasn't been summarized yet (debounce may
+        # still be waiting) so the session doesn't end mid-window.
+        try:
+            await self.llm.flush()
+        except Exception:
+            logger.exception("Error flushing LLM pipeline on session close")
+        await self.stt.close()
+
+    # ---- STT -> frontend + LLM -------------------------------------------------
+
+    async def _on_stt_turn(self, turn: dict) -> None:
+        await self._send_json(
+            {
+                "type": "transcript",
+                "text": turn.get("transcript") or turn.get("utterance") or "",
+                "is_final": bool(turn.get("end_of_turn")),
+                "language_code": turn.get("language_code"),
+                # AssemblyAI sends an unformatted end_of_turn=true Turn message
+                # immediately, then a formatted one for the same turn_order a
+                # moment later — the frontend uses this to update one bubble
+                # per turn instead of appending a duplicate.
+                "turn_order": turn.get("turn_order"),
+            }
+        )
+        # LLMPipeline.on_turn already ignores partials and debounces Gemini
+        # calls internally (see llm_pipeline.py) to stay under the free-tier
+        # rate limit.
+        await self.llm.on_turn(turn)
+
+    # ---- LLM -> frontend ---------------------------------------------------
+
+    async def _send_summary(self, result: IntakeResult) -> None:
+        await self._send_json(
+            {
+                "type": "summary",
+                "summary": result.summary.model_dump(),
+                "escalate_to_interpreter": result.escalate_to_interpreter,
+            }
+        )
+
+    async def _send_escalation(self, result: IntakeResult) -> None:
+        await self._send_json({"type": "escalation", "red_flags": result.summary.red_flags})
+        try:
+            audio = await self.tts.synthesize(ESCALATION_MESSAGE)
+            await self._send_audio(audio, context="escalation")
+        except Exception:
+            logger.exception("Failed to synthesize escalation notice")
+
+    # ---- client-initiated actions ------------------------------------------
+
+    async def handle_client_message(self, message: dict) -> None:
+        msg_type = message.get("type")
+
+        if msg_type == "speak":
+            text = (message.get("text") or "").strip()
+            if not text:
+                return
+            try:
+                audio = await self.tts.synthesize(text)
+                await self._send_audio(audio, context="speak")
+            except Exception:
+                logger.exception("TTS synthesis failed")
+                await self._send_json({"type": "error", "message": "TTS synthesis failed"})
+
+        elif msg_type == "end":
+            # Gemini retries (transient 503s) can take several seconds; tell
+            # the client explicitly once the final summary attempt is done so
+            # it knows it's now safe to close the socket, instead of guessing
+            # with a fixed timeout that could cut off a delayed summary.
+            # If the flush itself fails (e.g. Gemini retries exhausted), the
+            # client must still get "session_ended" — otherwise it's stuck
+            # showing "Finishing up..." until its own fallback timeout fires.
+            try:
+                await self.llm.flush()
+            except Exception:
+                logger.exception("Error flushing LLM pipeline on client 'end'")
+            await self._send_json({"type": "session_ended"})
+
+        else:
+            logger.warning("Unknown client message type: %r", msg_type)
+
+    # ---- helpers -------------------------------------------------------------
+
+    async def _send_json(self, payload: dict) -> None:
+        async with self._send_lock:
+            await self.ws.send_json(payload)
+
+    async def _send_audio(self, audio_bytes: bytes, context: str) -> None:
+        await self._send_json(
+            {
+                "type": "audio",
+                "context": context,
+                "format": "mp3",
+                "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
+            }
+        )
+
+
+@app.websocket("/ws/session")
+async def session_endpoint(websocket: WebSocket) -> None:
+    await websocket.accept()
+
+    try:
+        session = SinaSession(websocket)
+        await session.start()
+    except Exception:
+        logger.exception("Failed to start Sina session")
+        await websocket.close(code=1011)
+        return
+
+    try:
+        while True:
+            message = await websocket.receive()
+
+            if message["type"] == "websocket.disconnect":
+                break
+
+            audio_bytes = message.get("bytes")
+            if audio_bytes is not None:
+                await session.stt.send_audio(audio_bytes)
+                continue
+
+            text = message.get("text")
+            if text is not None:
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    logger.warning("Ignoring non-JSON text frame: %r", text[:200])
+                    continue
+                await session.handle_client_message(payload)
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("Error in Sina session")
+    finally:
+        await session.close()
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}

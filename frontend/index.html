@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sina — Clinical Intake</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>Sina</h1>
+        <p class="subtitle">Bilingual Clinical Intake Assistant</p>
+      </div>
+    </div>
+    <div class="status" id="status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Idle</span>
+    </div>
+  </header>
+
+  <main>
+    <div id="escalationBanner" class="escalation-banner" hidden role="alert">
+      <span class="escalation-icon" aria-hidden="true">&#9888;</span>
+      <div>
+        <strong>Connecting you with a human interpreter.</strong>
+        <p>This case has been flagged as high urgency and requires immediate human attention.</p>
+      </div>
+    </div>
+
+    <section class="panel mic-panel">
+      <button id="micButton" class="mic-button" type="button" aria-pressed="false">
+        <span class="mic-icon" aria-hidden="true"></span>
+      </button>
+      <p class="mic-hint" id="micHint">Tap to begin speaking with Sina</p>
+    </section>
+
+    <section class="panel transcript-panel">
+      <h2>Transcript</h2>
+      <div id="transcriptLog" class="transcript-log" aria-live="polite">
+        <p class="transcript-placeholder" id="transcriptPlaceholder">
+          Your conversation will appear here as you speak, in English or Arabic.
+        </p>
+      </div>
+      <p id="partialLine" class="partial-line" dir="auto"></p>
+    </section>
+
+    <section class="panel summary-panel" id="summaryPanel" hidden>
+      <div class="summary-header">
+        <h2>Intake Summary</h2>
+        <span id="urgencyBadge" class="urgency-badge urgency-low">low</span>
+      </div>
+
+      <p id="summaryNote" class="summary-note"></p>
+
+      <div class="summary-grid">
+        <div class="summary-field">
+          <h3>Symptoms</h3>
+          <ul id="symptomsList" class="summary-list"></ul>
+        </div>
+        <div class="summary-field">
+          <h3>Medications</h3>
+          <ul id="medicationsList" class="summary-list"></ul>
+        </div>
+        <div class="summary-field">
+          <h3>Allergies</h3>
+          <ul id="allergiesList" class="summary-list"></ul>
+        </div>
+      </div>
+
+      <div id="redFlagsSection" class="red-flags-section" hidden>
+        <h3>Red Flags</h3>
+        <ul id="redFlagsList" class="summary-list red-flags-list"></ul>
+      </div>
+    </section>
+  </main>
+
+  <audio id="ttsAudio" hidden></audio>
+
+  <script src="app.js"></script>
+</body>
+</html>
