@@ -41,7 +41,12 @@ Protocol (single WebSocket at /ws/session):
     - {"type": "audio", "context": "speak" | "escalation" | "confirmation", "format": "mp3", "audio_base64": "..."}
     - {"type": "error", "message": "..."}
 
-Run: uvicorn server:app --reload --port 8000   (from backend/)
+Run (dev):  uvicorn server:app --reload --port 8000        (from backend/)
+Run (prod): uvicorn server:app --host 0.0.0.0 --port $PORT (from backend/)
+  No code changes needed between the two — uvicorn is only ever invoked via
+  CLI here, so host/port binding is entirely controlled by the start
+  command. Same-origin frontend + WebSocket (see frontend/app.js's
+  wsUrl()), so no CORS configuration is needed either.
 """
 
 from __future__ import annotations
