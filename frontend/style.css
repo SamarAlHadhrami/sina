@@ -243,6 +243,69 @@ main {
   padding: 32px 22px;
 }
 
+.lang-toggle {
+  display: flex;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px;
+  margin: 0;
+}
+
+.lang-toggle legend {
+  /* Visually hidden but present for assistive tech (fieldset needs one). */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.lang-toggle-option {
+  position: relative;
+  cursor: pointer;
+}
+
+.lang-toggle-option input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.lang-toggle-option span {
+  display: block;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  transition: background 0.15s var(--ease-standard), color 0.15s var(--ease-standard);
+}
+
+.lang-toggle-option input:checked + span {
+  background: var(--brand);
+  color: white;
+  font-weight: 600;
+}
+
+.lang-toggle-option input:focus-visible + span {
+  outline: 2px solid var(--brand-dark);
+  outline-offset: 2px;
+}
+
+.lang-toggle-option input:disabled + span {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.lang-toggle-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-align: center;
+  max-width: 320px;
+}
+
 .mic-button {
   width: 84px;
   height: 84px;

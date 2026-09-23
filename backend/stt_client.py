@@ -21,6 +21,7 @@ import json
 import logging
 import os
 from typing import Awaitable, Callable, Optional
+from urllib.parse import quote
 
 import websockets
 from dotenv import load_dotenv
@@ -46,11 +47,31 @@ LANGUAGE_CODES = ["ar", "en"]       # steers + restricts output to these two lan
 # committing a turn. Verified against the live API by checking the value
 # echoed back in the Begin message's `configuration` field — AssemblyAI
 # does NOT reject unknown query params, so "no error" alone doesn't confirm
-# a param is real; the echo does. Several other turn-detection params
-# (min_turn_silence, max_turn_silence, end_of_turn_confidence_threshold)
-# were tried the same way and are silently ignored for this model; do not
-# add them without re-verifying against the echoed configuration first.
+# a param is real; the echo does.
 TURN_DETECTION_MODE = "max_accuracy"
+
+# Re-verified live (twice, in separate sessions): min_turn_silence and
+# max_turn_silence are accepted without error but are NEVER reflected in
+# the Begin message's `configuration` echo, unlike `mode` above — most
+# likely because universal-3-5-pro uses the `mode` preset for turn timing
+# instead of exposing these directly (they may be real for older/non-Pro
+# models). Set anyway per explicit request since they're harmless if
+# inert, but `mode=max_accuracy` above is the lever with confirmed real
+# effect on turn-cutting; don't expect these two alone to fix a pause-cutoff
+# regression if mode is already correct.
+MIN_TURN_SILENCE_MS = "200"
+MAX_TURN_SILENCE_MS = "2000"
+
+# Domain-context bias. Neither this nor KEYTERMS below could be confirmed
+# via the configuration echo (free-text/list params don't appear there
+# regardless of validity, unlike `mode`) — accepted without error and left
+# in per AssemblyAI's documented parameter list for Pro streaming, but
+# real-world accuracy impact wasn't independently measurable this session.
+DOMAIN_PROMPT = (
+    "Clinical patient intake conversation, bilingual Arabic and English, "
+    "includes medication names, symptoms, and allergy information."
+)
+KEYTERMS = ["Sina", "Panadol", "aspirin", "ibuprofen", "chest pain", "headache", "allergy"]
 
 # Called with each raw "Turn" message dict from AssemblyAI.
 TranscriptCallback = Callable[[dict], Awaitable[None]]
@@ -97,6 +118,10 @@ class STTClient:
             ("speech_model", SPEECH_MODEL),
             ("format_turns", "true"),  # ask AssemblyAI to punctuate/case final turns
             ("mode", TURN_DETECTION_MODE),
+            ("min_turn_silence", MIN_TURN_SILENCE_MS),
+            ("max_turn_silence", MAX_TURN_SILENCE_MS),
+            ("prompt", DOMAIN_PROMPT),
+            ("keyterms_prompt", json.dumps(KEYTERMS)),
         ]
         # language_codes is a repeated query param, one code per occurrence
         # (a comma-joined single value is rejected by the API), e.g.
@@ -104,7 +129,10 @@ class STTClient:
         for code in self._language_codes:
             params.append(("language_codes", code))
 
-        query = "&".join(f"{k}={v}" for k, v in params)
+        # prompt/keyterms_prompt contain spaces, commas, brackets — must be
+        # percent-encoded (previous param values were all simple tokens, so
+        # this was never needed before).
+        query = "&".join(f"{k}={quote(str(v))}" for k, v in params)
         return f"{STREAMING_ENDPOINT}?{query}"
 
     async def connect(self) -> None:

@@ -17,7 +17,7 @@ patient session:
                                  to frontend           + spoken TTS notice
                                                         (TTSClient / ElevenLabs)
 
-Protocol (single WebSocket at /ws/session):
+Protocol (single WebSocket at /ws/session?lang=ar|en, lang omitted = both):
 
   Client -> Server
     - binary frame: raw 16kHz mono PCM16 audio chunk (mic input)
@@ -141,12 +141,20 @@ class SinaSession:
     """Wires one patient's STTClient -> LLMPipeline -> TTSClient together for
     the lifetime of a single WebSocket connection."""
 
-    def __init__(self, websocket: WebSocket) -> None:
+    def __init__(self, websocket: WebSocket, language_codes: Optional[list] = None) -> None:
         self.ws = websocket
         self.tts = TTSClient()
         self.llm = LLMPipeline(on_summary=self._send_summary, on_escalation=self._send_escalation)
-        self.stt = STTClient(on_turn=self._on_stt_turn)
+        self.stt = STTClient(on_turn=self._on_stt_turn, language_codes=language_codes)
         self._send_lock = asyncio.Lock()
+        # Set when any final turn contributing to the transcript accumulated
+        # for the current (not-yet-summarized) batch was low-confidence.
+        # Gates the "Got it, I've noted that down." confirmation below — the
+        # amber "did I hear that right?" UI already flags per-turn
+        # uncertainty to the patient; the spoken confirmation shouldn't
+        # separately assert confidence the transcript didn't earn. Reset
+        # after each summary since that's a fresh batch of turns.
+        self._pending_low_confidence = False
 
     async def start(self) -> None:
         await self.stt.connect()
@@ -165,6 +173,9 @@ class SinaSession:
     async def _on_stt_turn(self, turn: dict) -> None:
         is_final = bool(turn.get("end_of_turn"))
         confidence = _average_word_confidence(turn) if is_final else None
+        low_confidence = confidence is not None and confidence < LOW_CONFIDENCE_THRESHOLD
+        if low_confidence:
+            self._pending_low_confidence = True
         text = turn.get("transcript") or turn.get("utterance") or ""
         await self._send_json(
             {
@@ -178,7 +189,7 @@ class SinaSession:
                 # per turn instead of appending a duplicate.
                 "turn_order": turn.get("turn_order"),
                 "confidence": confidence,
-                "low_confidence": confidence is not None and confidence < LOW_CONFIDENCE_THRESHOLD,
+                "low_confidence": low_confidence,
             }
         )
         # LLMPipeline.on_turn already ignores partials and debounces Gemini
@@ -198,8 +209,12 @@ class SinaSession:
             }
         )
         # Escalation already gets its own spoken notice (_send_escalation);
-        # don't also speak the generic confirmation on top of it.
-        if not result.escalate_to_interpreter:
+        # don't also speak the generic confirmation on top of it. Also skip
+        # it if any turn in this batch was low-confidence — see
+        # _pending_low_confidence docstring above for why.
+        skip_confirmation = result.escalate_to_interpreter or self._pending_low_confidence
+        self._pending_low_confidence = False
+        if not skip_confirmation:
             try:
                 audio = await self.tts.synthesize(CONFIRMATION_MESSAGE)
                 await self._send_audio(audio, context="confirmation")
@@ -268,8 +283,19 @@ class SinaSession:
 async def session_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
 
+    # Language toggle (?lang=ar|en): a single-element language_codes list
+    # heavily biases AssemblyAI toward that language and was confirmed on
+    # real bilingual speech to eliminate cross-language garbling that
+    # full code-switching mode produces. Must come from the connection URL,
+    # not a post-connect client message — the STT session (which needs the
+    # language list up front) connects in session.start() below, before any
+    # client message could arrive. Any other/missing value falls through to
+    # STTClient's own default (both languages, full code-switching).
+    lang = websocket.query_params.get("lang")
+    language_codes = [lang] if lang in ("ar", "en") else None
+
     try:
-        session = SinaSession(websocket)
+        session = SinaSession(websocket, language_codes=language_codes)
         await session.start()
     except Exception:
         logger.exception("Failed to start Sina session")

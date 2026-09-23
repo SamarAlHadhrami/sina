@@ -123,13 +123,21 @@ Voiceover over a simple pipeline diagram (mic → STT → LLM → TTS/UI):
 
 > "Under the hood: audio streams straight from the browser to
 > AssemblyAI's Universal-3.5 Pro model over a WebSocket, the only model
-> that code-switches natively between Arabic and English mid-sentence —
-> no language toggle, no restart. Every completed turn is sent to
-> Gemini Flash, which extracts symptoms, medications, allergies, and an
-> urgency rating into structured JSON. If urgency comes back high, a
-> hard rule in the backend — not a suggestion to the model — routes the
-> case to escalation and speaks a calming notice back to the patient via
-> ElevenLabs, instantly, in parallel with the summary card."
+> that code-switches natively between Arabic and English mid-sentence.
+> Sina also offers a language toggle — Arabic-only or English-only —
+> which heavily biases the model to one language for cases where
+> accuracy matters more than switching mid-sentence, a deliberate choice
+> for a clinical setting, not a fallback we're embarrassed about. Every
+> completed turn is sent to Gemini Flash, which extracts symptoms,
+> medications, allergies, and an urgency rating into structured JSON. If
+> urgency comes back high, a hard rule in the backend — not a suggestion
+> to the model — routes the case to escalation and speaks a calming
+> notice back to the patient via ElevenLabs, instantly, in parallel with
+> the summary card."
+
+**Optional 5-10s beat**: briefly show the toggle itself (Both / Arabic
+only / English only) on screen while saying that line — it's a visible,
+tangible design decision, worth a glance rather than just a mention.
 
 ---
 
@@ -157,4 +165,13 @@ End on the Sina UI, idle, ready for the next patient.
   before the summary card appears, cut around it in editing rather than
   waiting live — the debounce window (~13s) is already accounted for in
   the timing budget above, but retries can occasionally add a few more
-  seconds.
+  seconds. Gemini also has a *daily* cap (20 requests/day on the free
+  tier) separate from the per-minute limit — don't burn it on rehearsal
+  takes right before the real recording.
+- **Do a quick "Both" mode test run with your own voice before recording.**
+  If code-switching mode garbles on your specific accent/mic/environment,
+  switch the toggle to Arabic-only or English-only for the take instead of
+  fighting it live — that's exactly the situation the toggle exists for.
+- If a turn comes back low-confidence, the amber "did I hear that right?"
+  prompt appears and Sina will *not* speak the "noted" confirmation for
+  that turn — that's intentional, not a glitch, if it happens on camera.

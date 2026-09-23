@@ -14,6 +14,7 @@
   const el = {
     micButton: document.getElementById("micButton"),
     micHint: document.getElementById("micHint"),
+    langToggle: document.getElementById("langToggle"),
     status: document.getElementById("status"),
     latencyStat: document.getElementById("latencyStat"),
     statusDot: document.getElementById("statusDot"),
@@ -271,9 +272,16 @@
   // WebSocket + message handling
   // ---------------------------------------------------------------------
 
+  function getLangMode() {
+    const checked = document.querySelector('input[name="langMode"]:checked');
+    return checked ? checked.value : "both";
+  }
+
   function wsUrl() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    return `${proto}://${location.host}/ws/session`;
+    const lang = getLangMode();
+    const query = lang === "both" ? "" : `?lang=${lang}`;
+    return `${proto}://${location.host}/ws/session${query}`;
   }
 
   function connectWebSocket() {
@@ -452,11 +460,16 @@
     isRecording = true;
     setMicPressed(true);
     setStatus("listening", "Listening");
+    // Language mode is fixed for the lifetime of the WebSocket/STT session
+    // (see wsUrl()) — changing it mid-recording wouldn't do anything, so
+    // disable it to avoid implying otherwise.
+    el.langToggle.querySelectorAll("input").forEach((input) => (input.disabled = true));
   }
 
   async function stopRecording() {
     isRecording = false;
     setMicPressed(false);
+    el.langToggle.querySelectorAll("input").forEach((input) => (input.disabled = false));
 
     if (processorNode) {
       processorNode.disconnect();

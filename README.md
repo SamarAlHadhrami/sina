@@ -85,6 +85,24 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   silently ignored — AssemblyAI doesn't reject unknown query params, so
   "no connection error" alone proves nothing) by checking it's echoed back
   in the `Begin` message's `configuration` field.
+- **Language toggle is an intentional design decision, not a limitation.**
+  Real-world phone testing showed that full Arabic↔English code-switching
+  mode occasionally produces cross-language garbling on ambiguous audio.
+  The WebSocket endpoint accepts `?lang=ar` or `?lang=en` to pass AssemblyAI
+  a single-element `language_codes` list, which heavily biases the model to
+  that language and eliminates that failure mode at the cost of not
+  switching languages mid-sentence. For a clinical intake tool, a patient
+  who commits to one language for reliable transcription is a better
+  default than an impressive-but-occasionally-wrong code-switching demo.
+  The UI defaults to "Both" (code-switching) with single-language modes
+  offered and recommended alongside it — not hidden as a fallback.
+- `min_turn_silence`/`max_turn_silence` (200ms/2000ms) and `prompt`/`keyterms_prompt`
+  (domain context + clinical vocabulary) are also set. Unlike `mode`, none
+  of these four are reflected in the `Begin` configuration echo, so their
+  real-world effect on this Pro model couldn't be independently confirmed
+  the way `mode` was — added per AssemblyAI's documented parameter set
+  since they're harmless if inert. `mode=max_accuracy` remains the
+  confirmed-effective lever for turn-cutting behavior.
 - Every `Turn` message is logged (`turn_order`, `end_of_turn`,
   `end_of_turn_confidence`, `transcript`) — the diagnostic that made the
   fragmentation bug provable rather than guessed-at.
@@ -217,6 +235,10 @@ replies `{"type":"session_ended"}` once safe to close the socket).
 - **Latency stat**: "Processed in Xs" in the header, from
   `processing_time_ms` (see `llm_pipeline.py` above) — intentionally not
   labeled as total response time.
+- **Language toggle**: a prominent segmented control above the mic button
+  (Both / Arabic only / English only), disabled while recording since the
+  choice is fixed for the lifetime of the STT session. See the intentional
+  design decision note in the `stt_client.py` section above.
 
 ## Known bugs found + fixed (via live testing, not just code review)
 
@@ -252,6 +274,20 @@ replies `{"type":"session_ended"}` once safe to close the socket).
    TTS was wired only for the escalation notice, never for a normal
    completed turn. Fixed by adding a spoken confirmation after every
    non-escalation summary (see `tts_client.py`/`server.py` above).
+7. **"Noted" confirmation fired even on low-confidence transcripts**: the
+   confirmation TTS check and the confidence-flagging check were two
+   completely disconnected code paths — confidence was computed and sent
+   to the frontend for the amber prompt, but `_send_summary` never
+   consulted it, so a garbled/uncertain turn still got a confident-sounding
+   spoken "noted." Fixed with `SinaSession._pending_low_confidence`, set
+   whenever any turn in the current batch is below threshold and checked
+   before playing the confirmation. Verified in isolation (mocked TTS, no
+   real API calls) that the confirmation is skipped when the flag is set
+   and fires normally when it isn't.
+8. **Real-world phone testing surfaced cross-language garbling** in full
+   code-switching mode on ambiguous audio — addressed with the language
+   toggle above, not by trying to force code-switching to be perfect (a
+   fundamentally harder, model-behavior problem rather than a config bug).
 
 ## Known limitations (to mention transparently in the demo)
 

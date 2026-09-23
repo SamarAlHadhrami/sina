@@ -38,6 +38,26 @@
     </div>
 
     <section class="panel mic-panel">
+      <fieldset class="lang-toggle" id="langToggle">
+        <legend>Listening language</legend>
+        <label class="lang-toggle-option">
+          <input type="radio" name="langMode" value="both" checked />
+          <span>Both (code-switching)</span>
+        </label>
+        <label class="lang-toggle-option">
+          <input type="radio" name="langMode" value="ar" />
+          <span>Arabic only</span>
+        </label>
+        <label class="lang-toggle-option">
+          <input type="radio" name="langMode" value="en" />
+          <span>English only</span>
+        </label>
+      </fieldset>
+      <p class="lang-toggle-hint">
+        Single-language mode is more reliable — recommended when accuracy
+        matters more than switching mid-sentence.
+      </p>
+
       <button id="micButton" class="mic-button" type="button" aria-pressed="false" aria-label="Start speaking with Sina">
         <span class="mic-icon" aria-hidden="true"></span>
       </button>
