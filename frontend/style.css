@@ -1,15 +1,19 @@
 /* Sina — calm, clinical, unflashy. Fixed light theme on purpose: an intake
-   kiosk should look the same regardless of the device's dark-mode setting. */
+   kiosk should look the same regardless of the device's dark-mode setting.
+   Palette: muted indigo/plum, deliberately not green — distinctive without
+   losing the calm/clinical read. Urgency badge colors (green/amber/red)
+   are a standard traffic-light convention and are kept as-is; changing
+   those specifically would hurt the thing they exist to communicate. */
 
 :root {
-  --bg: #f4f7f7;
+  --bg: #f6f5fb;
   --surface: #ffffff;
-  --border: #dfe6e6;
-  --text: #1f2d2d;
-  --text-muted: #5c6b6b;
-  --brand: #2f6e6a;
-  --brand-dark: #23524f;
-  --brand-tint: #e4f0ef;
+  --border: #e3e0f0;
+  --text: #241f33;
+  --text-muted: #635d78;
+  --brand: #5b4b8a;
+  --brand-dark: #3f3465;
+  --brand-tint: #efebfa;
 
   --urgency-low-bg: #e6f4ea;
   --urgency-low-text: #276a3b;
@@ -22,7 +26,7 @@
   --danger-bg: #fdeceb;
 
   --radius: 14px;
-  --shadow: 0 1px 3px rgba(31, 45, 45, 0.08), 0 6px 20px rgba(31, 45, 45, 0.06);
+  --shadow: 0 1px 3px rgba(36, 31, 51, 0.08), 0 6px 20px rgba(36, 31, 51, 0.06);
 
   /* Restrained, professional easing — no bounce/overshoot (Emil/Jakub). */
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
@@ -58,11 +62,12 @@
 
 body {
   margin: 0;
-  padding: 0 16px 48px;
-  background: var(--bg);
+  padding: 0 16px 56px;
+  /* Subtle, tasteful — a faint wash, not a marketing-page gradient. */
+  background: linear-gradient(180deg, #f8f7fc 0%, var(--bg) 320px);
   color: var(--text);
-  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  line-height: 1.5;
+  font-family: "Manrope", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.6;
 }
 
 main {
@@ -70,7 +75,7 @@ main {
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 24px;
 }
 
 /* ---------- header ---------- */
@@ -78,7 +83,9 @@ main {
 .app-header {
   max-width: 720px;
   margin: 0 auto;
-  padding: 28px 0 20px;
+  padding: 30px 0 22px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -298,14 +305,6 @@ main {
   cursor: not-allowed;
 }
 
-.lang-toggle-hint {
-  margin: 0;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  text-align: center;
-  max-width: 320px;
-}
-
 .mic-button {
   width: 84px;
   height: 84px;
@@ -378,11 +377,14 @@ main {
 /* ---------- transcript ---------- */
 
 .transcript-log {
+  /* No max-height/overflow here on purpose: a nested scroll box hid older
+     turns behind an unobvious scrollbar (especially on phones), which
+     looked exactly like turns were disappearing when new ones arrived —
+     they were just scrolled out of view. This grows with the page like a
+     real conversation transcript instead. */
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 260px;
-  overflow-y: auto;
 }
 
 .transcript-placeholder {

@@ -47,12 +47,6 @@
   let processorNode = null;
   let isRecording = false;
 
-  // AssemblyAI sends an unformatted end_of_turn=true Turn message
-  // immediately, then a formatted (punctuated) one for the SAME turn_order
-  // a moment later. Track the last finalized turn's bubble so the second
-  // message updates it in place instead of appending a duplicate.
-  let lastFinalTurnOrder = null;
-  let lastFinalLineEl = null;
   let escalationConnectedTimer = null;
 
   // ---------------------------------------------------------------------
@@ -119,24 +113,33 @@
     if (!text) return;
     el.transcriptPlaceholder.hidden = true;
 
-    // If this final message belongs to the same turn as the last one we
-    // rendered (the formatted revision superseding the unformatted one),
-    // update that bubble instead of creating a new one.
-    if (
-      turnOrder !== undefined &&
-      turnOrder !== null &&
-      turnOrder === lastFinalTurnOrder &&
-      lastFinalLineEl
-    ) {
-      lastFinalLineEl.querySelector(".transcript-line").textContent = text;
-      setConfidencePrompt(lastFinalLineEl, lowConfidence);
-      setLanguageBadge(lastFinalLineEl, languageTag);
-      el.transcriptLog.scrollTop = el.transcriptLog.scrollHeight;
+    // AssemblyAI sends an unformatted end_of_turn=true Turn immediately,
+    // then a formatted (punctuated) one for the SAME turn_order a moment
+    // later — that second message should update the existing bubble, not
+    // append a duplicate. Looked up by a data-turn-order attribute on
+    // every bubble (not just "the single most recent one") so an
+    // out-of-order-arrival case — the formatted revision for an earlier
+    // turn landing after a later turn has already started — still finds
+    // and updates the right bubble instead of misfiring against whichever
+    // turn happened to be last.
+    const existing =
+      turnOrder !== undefined && turnOrder !== null
+        ? el.transcriptLog.querySelector(`[data-turn-order="${turnOrder}"]`)
+        : null;
+
+    if (existing) {
+      existing.querySelector(".transcript-line").textContent = text;
+      setConfidencePrompt(existing, lowConfidence);
+      setLanguageBadge(existing, languageTag);
+      existing.scrollIntoView({ behavior: "smooth", block: "end" });
       return;
     }
 
     const wrapper = document.createElement("div");
     wrapper.className = "transcript-item";
+    if (turnOrder !== undefined && turnOrder !== null) {
+      wrapper.dataset.turnOrder = String(turnOrder);
+    }
 
     const p = document.createElement("p");
     p.className = "transcript-line";
@@ -147,10 +150,9 @@
     el.transcriptLog.appendChild(wrapper);
     setLanguageBadge(wrapper, languageTag);
     setConfidencePrompt(wrapper, lowConfidence);
-    el.transcriptLog.scrollTop = el.transcriptLog.scrollHeight;
-
-    lastFinalTurnOrder = turnOrder ?? null;
-    lastFinalLineEl = wrapper;
+    // The log grows with the page now (no nested scroll container), so
+    // bring the new bubble into view the same way a chat app would.
+    wrapper.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
   function setPartial(text) {
@@ -273,15 +275,16 @@
   // ---------------------------------------------------------------------
 
   function getLangMode() {
+    // No "both"/bilingual fallback: one of these two is always checked
+    // (the HTML marks "ar" checked by default), by design.
     const checked = document.querySelector('input[name="langMode"]:checked');
-    return checked ? checked.value : "both";
+    return checked ? checked.value : "ar";
   }
 
   function wsUrl() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const lang = getLangMode();
-    const query = lang === "both" ? "" : `?lang=${lang}`;
-    return `${proto}://${location.host}/ws/session${query}`;
+    return `${proto}://${location.host}/ws/session?lang=${lang}`;
   }
 
   function connectWebSocket() {

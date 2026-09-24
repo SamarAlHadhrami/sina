@@ -1,13 +1,16 @@
 """
 backend/stt_client.py
 
-Realtime bilingual (Arabic <-> English) speech-to-text client for Sina,
-built on AssemblyAI's Universal-3.5 Pro Streaming API.
+Realtime Arabic/English speech-to-text client for Sina, built on
+AssemblyAI's Universal-3.5 Pro Streaming API.
 
-Universal-3.5 Pro is the AssemblyAI model with native code-switching across
-18 languages (Arabic and English included), so one session can transcribe a
-patient moving between the two languages mid-sentence without restarting the
-connection or picking a language up front.
+Universal-3.5 Pro supports native code-switching, but Sina deliberately
+does NOT use it: real bilingual phone testing showed full code-switching
+mode occasionally garbles cross-language on ambiguous audio. Every session
+is single-language instead — the caller (server.py, from the frontend's
+language toggle) passes a one-element language_codes list, which heavily
+biases the model toward that language. This is an intentional accuracy
+decision for a clinical setting, not a limitation of the model.
 
 Docs:
   https://www.assemblyai.com/docs/streaming/api-spec/streaming-websocket
@@ -38,8 +41,8 @@ STREAMING_ENDPOINT = "wss://streaming.assemblyai.com/v3/ws"
 
 SAMPLE_RATE = 16000                # required for pcm_s16le
 ENCODING = "pcm_s16le"             # raw 16-bit little-endian PCM, mono
-SPEECH_MODEL = "universal-3-5-pro"  # only model with Arabic<->English code-switching
-LANGUAGE_CODES = ["ar", "en"]       # steers + restricts output to these two languages
+SPEECH_MODEL = "universal-3-5-pro"  # supports Arabic + English; code-switching unused by design
+DEFAULT_LANGUAGE_CODES = ["ar"]     # single-language fallback if none is passed in — never both
 
 # Default is "balanced", which favors low latency and was confirmed live to
 # cut turns too aggressively on real speech (short, fragmented bubbles
@@ -106,7 +109,7 @@ class STTClient:
             )
 
         self._on_turn = on_turn
-        self._language_codes = language_codes or LANGUAGE_CODES
+        self._language_codes = language_codes or DEFAULT_LANGUAGE_CODES
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._receiver_task: Optional[asyncio.Task] = None
         self.session_id: Optional[str] = None
@@ -138,7 +141,7 @@ class STTClient:
     async def connect(self) -> None:
         """Open the websocket, authenticate, and wait for the Begin message."""
         url = self._build_url()
-        logger.info("Connecting to AssemblyAI streaming session (ar+en code-switching)")
+        logger.info("Connecting to AssemblyAI streaming session (language_codes=%s)", self._language_codes)
 
         self._ws = await websockets.connect(
             url,

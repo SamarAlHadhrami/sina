@@ -17,7 +17,8 @@ patient session:
                                  to frontend           + spoken TTS notice
                                                         (TTSClient / ElevenLabs)
 
-Protocol (single WebSocket at /ws/session?lang=ar|en, lang omitted = both):
+Protocol (single WebSocket at /ws/session?lang=ar|en — one is required in
+spirit; an omitted/invalid value defaults to "ar" rather than bilingual):
 
   Client -> Server
     - binary frame: raw 16kHz mono PCM16 audio chunk (mic input)
@@ -194,8 +195,16 @@ class SinaSession:
         )
         # LLMPipeline.on_turn already ignores partials and debounces Gemini
         # calls internally (see llm_pipeline.py) to stay under the free-tier
-        # rate limit.
-        await self.llm.on_turn(turn)
+        # rate limit. Caught here because on_turn() is awaited directly from
+        # STTClient's receive loop (see stt_client.py's _receive_loop) — an
+        # unhandled Gemini failure (503/429, both routine on the free tier)
+        # would otherwise crash that loop entirely, silently killing turn
+        # processing for the rest of the session. Found via a real crash
+        # during testing, not theoretical.
+        try:
+            await self.llm.on_turn(turn)
+        except Exception:
+            logger.exception("Error processing turn in LLM pipeline")
 
     # ---- LLM -> frontend ---------------------------------------------------
 
@@ -285,14 +294,16 @@ async def session_endpoint(websocket: WebSocket) -> None:
 
     # Language toggle (?lang=ar|en): a single-element language_codes list
     # heavily biases AssemblyAI toward that language and was confirmed on
-    # real bilingual speech to eliminate cross-language garbling that
-    # full code-switching mode produces. Must come from the connection URL,
-    # not a post-connect client message — the STT session (which needs the
+    # real bilingual speech to eliminate cross-language garbling that full
+    # code-switching mode produces. Must come from the connection URL, not
+    # a post-connect client message — the STT session (which needs the
     # language list up front) connects in session.start() below, before any
-    # client message could arrive. Any other/missing value falls through to
-    # STTClient's own default (both languages, full code-switching).
+    # client message could arrive. No bilingual/"both" mode exists anymore
+    # (removed by design — the frontend always sends one of these two, but
+    # default here too in case of a malformed/missing param, rather than
+    # falling through to STTClient's old both-languages default).
     lang = websocket.query_params.get("lang")
-    language_codes = [lang] if lang in ("ar", "en") else None
+    language_codes = [lang] if lang in ("ar", "en") else ["ar"]
 
     try:
         session = SinaSession(websocket, language_codes=language_codes)
