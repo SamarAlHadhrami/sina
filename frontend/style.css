@@ -164,6 +164,48 @@ main {
   background: var(--danger);
 }
 
+/* ---------- disclaimer ---------- */
+
+.disclaimer {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: center;
+}
+
+/* ---------- review banner (uncertain data, not urgent) ---------- */
+
+.review-banner {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  background: var(--urgency-medium-bg);
+  border: 1px solid #f3e2bf;
+  color: var(--urgency-medium-text);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+
+.review-banner strong {
+  display: block;
+  font-size: 1rem;
+  margin-bottom: 2px;
+}
+
+.review-banner p {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.review-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
 /* ---------- escalation banner ---------- */
 
 .escalation-banner {
@@ -600,6 +642,116 @@ main {
   background: var(--urgency-medium-bg);
   color: var(--urgency-medium-text);
   border-color: #f3e2bf;
+}
+
+/* ---------- critical fields (transcript integrity layer) ---------- */
+
+.critical-fields-section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.critical-fields-caveat {
+  margin: -2px 0 10px;
+  font-size: 0.78rem;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.critical-fields-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.critical-field-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.88rem;
+}
+
+.critical-field-item.status-flagged,
+.critical-field-item.status-unconfirmed {
+  border-color: #f3e2bf;
+  background: var(--urgency-medium-bg);
+}
+
+.critical-field-item.status-confirmed {
+  background: var(--bg);
+}
+
+.critical-field-item.status-corrected {
+  border-color: var(--brand);
+  background: var(--brand-tint);
+}
+
+.critical-field-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.critical-field-type {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.critical-field-status {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.critical-field-value {
+  margin: 4px 0 2px;
+  font-weight: 600;
+}
+
+.critical-field-quote {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.critical-field-reason {
+  margin: 0 0 8px;
+  font-size: 0.82rem;
+  color: var(--urgency-medium-text);
+}
+
+.critical-field-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.critical-field-actions button {
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.critical-field-edit-input {
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  flex: 1;
 }
 
 /* ---------- misc ---------- */

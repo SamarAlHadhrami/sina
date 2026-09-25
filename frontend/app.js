@@ -36,6 +36,10 @@
     redFlagsList: document.getElementById("redFlagsList"),
     clinicalNotesSection: document.getElementById("clinicalNotesSection"),
     clinicalNotesList: document.getElementById("clinicalNotesList"),
+    criticalFieldsSection: document.getElementById("criticalFieldsSection"),
+    criticalFieldsList: document.getElementById("criticalFieldsList"),
+    reviewBanner: document.getElementById("reviewBanner"),
+    reviewReason: document.getElementById("reviewReason"),
     ttsAudio: document.getElementById("ttsAudio"),
     exportPdfButton: document.getElementById("exportPdfButton"),
   };
@@ -159,6 +163,38 @@
     el.partialLine.textContent = text || "";
   }
 
+  // ---------------------------------------------------------------------
+  // PII redaction — narrow scope, export-only (item 5)
+  //
+  // Only applied to raw_quote text right before printing (see
+  // exportPdfButton's click handler) and restored immediately after — the
+  // on-screen critical-fields view stays fully unredacted for internal/
+  // clinical use, only the printed/exported copy is scrubbed. Explicitly
+  // does NOT touch symptoms/medications/allergies/conditions anywhere.
+  //
+  // Honest limitation: phone/email/DOB are reliably regex-matchable
+  // (they have a fixed structure). Person names and addresses are NOT —
+  // doing that properly needs an NER model, and a naive name-guessing
+  // regex risks redacting clinical terms that happen to look like names,
+  // which is worse than under-redacting. What's implemented for names is
+  // narrow pattern matching on the specific self-introduction phrasing an
+  // intake conversation actually uses ("my name is X", "اسمي X"), not a
+  // general name detector — real names mentioned any other way won't be
+  // caught. Flagged here rather than pretending this is complete.
+  function redactPII(text) {
+    return text
+      .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[redacted: email]")
+      .replace(/\b(19|20)\d{2}[-/]\d{1,2}[-/]\d{1,2}\b/g, "[redacted: DOB]")
+      .replace(/\b\d{1,2}[-/]\d{1,2}[-/](19|20)\d{2}\b/g, "[redacted: DOB]")
+      .replace(/\b\+?\d[\d\s-]{6,}\d\b/g, "[redacted: phone]")
+      .replace(
+        /\b(my name is|i'?m|this is)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)?)/gi,
+        "$1 [redacted: name]"
+      )
+      .replace(/اسمي\s+\S+(\s+\S+)?/g, "اسمي [محجوب: الاسم]")
+      .replace(/\b\d+\s+[A-Za-z]+\s+(street|st\.?|road|rd\.?|avenue|ave\.?)\b/gi, "[redacted: address]");
+  }
+
   function renderList(listEl, items) {
     listEl.innerHTML = "";
     listEl.classList.toggle("empty", !items || items.length === 0);
@@ -207,8 +243,116 @@
       el.clinicalNotesSection.hidden = true;
     }
 
+    renderCriticalFields(summary.critical_fields);
+
+    if (summary.needs_human_review) {
+      el.reviewBanner.hidden = false;
+      el.reviewReason.textContent = summary.review_reason || "A critical field could not be determined with confidence.";
+    } else {
+      el.reviewBanner.hidden = true;
+    }
+
     if (payload.escalate_to_interpreter) {
       showEscalation();
+    }
+  }
+
+  const FIELD_TYPE_LABELS = {
+    medication: "Medication",
+    allergy: "Allergy",
+    symptom_duration: "Duration/Onset",
+    negation: "Negation",
+  };
+
+  function renderCriticalFields(fields) {
+    el.criticalFieldsList.innerHTML = "";
+    if (!fields || fields.length === 0) {
+      el.criticalFieldsSection.hidden = true;
+      return;
+    }
+    el.criticalFieldsSection.hidden = false;
+
+    for (const field of fields) {
+      const li = document.createElement("li");
+      li.className = "critical-field-item status-" + field.status;
+
+      const row = document.createElement("div");
+      row.className = "critical-field-row";
+      const typeLabel = document.createElement("span");
+      typeLabel.className = "critical-field-type";
+      typeLabel.textContent = FIELD_TYPE_LABELS[field.field_type] || field.field_type;
+      const statusLabel = document.createElement("span");
+      statusLabel.className = "critical-field-status";
+      statusLabel.textContent = field.status;
+      row.appendChild(typeLabel);
+      row.appendChild(statusLabel);
+      li.appendChild(row);
+
+      const value = document.createElement("p");
+      value.className = "critical-field-value";
+      value.textContent = field.normalized_value;
+      li.appendChild(value);
+
+      const quote = document.createElement("p");
+      quote.className = "critical-field-quote";
+      quote.dir = "auto";
+      quote.textContent = `"${field.raw_quote}"`;
+      li.appendChild(quote);
+
+      if (field.reason) {
+        const reason = document.createElement("p");
+        reason.className = "critical-field-reason";
+        reason.textContent = field.reason;
+        li.appendChild(reason);
+      }
+
+      // Tap-to-fix (item 2): voice-only correction can compound errors on
+      // exactly the fields most likely to already be misheard, so
+      // uncertain fields get an explicit UI correction path instead.
+      if (field.status === "unconfirmed" || field.status === "flagged") {
+        const actions = document.createElement("div");
+        actions.className = "critical-field-actions";
+
+        const confirmBtn = document.createElement("button");
+        confirmBtn.type = "button";
+        confirmBtn.textContent = "Confirm correct";
+        confirmBtn.addEventListener("click", () => {
+          field.status = "confirmed";
+          li.className = "critical-field-item status-confirmed";
+          statusLabel.textContent = "confirmed";
+          actions.remove();
+        });
+
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", () => {
+          const input = document.createElement("input");
+          input.type = "text";
+          input.className = "critical-field-edit-input";
+          input.value = field.normalized_value;
+          const saveBtn = document.createElement("button");
+          saveBtn.type = "button";
+          saveBtn.textContent = "Save";
+          saveBtn.addEventListener("click", () => {
+            field.normalized_value = input.value;
+            field.status = "corrected";
+            value.textContent = input.value;
+            li.className = "critical-field-item status-corrected";
+            statusLabel.textContent = "corrected";
+            actions.remove();
+          });
+          actions.innerHTML = "";
+          actions.appendChild(input);
+          actions.appendChild(saveBtn);
+        });
+
+        actions.appendChild(confirmBtn);
+        actions.appendChild(editBtn);
+        li.appendChild(actions);
+      }
+
+      el.criticalFieldsList.appendChild(li);
     }
   }
 
@@ -331,6 +475,18 @@
 
       case "escalation":
         showEscalation();
+        break;
+
+      case "language_switched":
+        // Confirms a switch_language request (or a matched voice command
+        // — see server.py's _detect_switch_command) completed. Sync the
+        // visible toggle in case a voice command triggered this instead
+        // of the UI tap.
+        {
+          const radio = document.querySelector(`input[name="langMode"][value="${msg.lang}"]`);
+          if (radio) radio.checked = true;
+        }
+        if (isRecording) setStatus("listening", "Listening");
         break;
 
       case "audio":
@@ -463,16 +619,11 @@
     isRecording = true;
     setMicPressed(true);
     setStatus("listening", "Listening");
-    // Language mode is fixed for the lifetime of the WebSocket/STT session
-    // (see wsUrl()) — changing it mid-recording wouldn't do anything, so
-    // disable it to avoid implying otherwise.
-    el.langToggle.querySelectorAll("input").forEach((input) => (input.disabled = true));
   }
 
   async function stopRecording() {
     isRecording = false;
     setMicPressed(false);
-    el.langToggle.querySelectorAll("input").forEach((input) => (input.disabled = false));
 
     if (processorNode) {
       processorNode.disconnect();
@@ -520,10 +671,47 @@
     }
   });
 
+  // Explicit language switch (item 6): an explicit tap here is the only
+  // way this fires — never inferred from a foreign word appearing
+  // mid-stream. Mid-recording, this sends switch_language over the live
+  // WebSocket (server closes the old AssemblyAI stream and reconnects with
+  // the new language, keeping all intake state gathered so far — see
+  // server.py's switch_language()). Before recording starts, there's no
+  // session yet to switch, so this is a no-op beyond the browser's own
+  // radio-button state change; wsUrl() picks up the choice when the
+  // session connects.
+  el.langToggle.querySelectorAll('input[name="langMode"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      if (isRecording && ws && ws.readyState === WebSocket.OPEN) {
+        setStatus("processing", `Switching to ${input.value === "ar" ? "Arabic" : "English"}…`);
+        ws.send(JSON.stringify({ type: "switch_language", lang: input.value }));
+      }
+    });
+  });
+
   // Native print-to-PDF: a @media print stylesheet isolates the summary
   // card for a clean printable/saveable intake report, no PDF library
   // needed for what the browser already does well.
+  //
+  // PII redaction (item 5) happens right here, transiently: the raw_quote
+  // text in each critical-field item is swapped for a redacted version
+  // just for the print, then restored on window.onafterprint — so the
+  // live on-screen view (used internally/for escalation) stays fully
+  // unredacted, and only the printed/exported copy is scrubbed.
   el.exportPdfButton.addEventListener("click", () => {
+    const quoteEls = el.criticalFieldsList.querySelectorAll(".critical-field-quote");
+    const originals = [];
+    quoteEls.forEach((elQuote) => {
+      originals.push(elQuote.textContent);
+      elQuote.textContent = redactPII(elQuote.textContent);
+    });
+
+    const restore = () => {
+      quoteEls.forEach((elQuote, i) => (elQuote.textContent = originals[i]));
+      window.removeEventListener("afterprint", restore);
+    };
+    window.addEventListener("afterprint", restore);
+
     window.print();
   });
 })();

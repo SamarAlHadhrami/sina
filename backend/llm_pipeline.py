@@ -52,6 +52,83 @@ DEBOUNCE_SECONDS = 13.0
 
 Urgency = Literal["low", "medium", "high"]
 
+# ---------------------------------------------------------------------------
+# Deterministic urgency (replaces the earlier sentiment-based idea entirely).
+#
+# Gemini's own `urgency`/`red_flags` judgment is kept as a *suggestion*, but
+# these keyword matches are checked directly against the raw accumulated
+# transcript (not Gemini's paraphrase of it) and can only ever ADD an
+# escalation, never remove one Gemini already made and never be downgraded
+# by a miscalibrated LLM call. Deliberately a small, reviewed list rather
+# than a broad/fuzzy one — false negatives here are dangerous, but so is a
+# list so broad it cries wolf and gets ignored. Bilingual (Arabic + English)
+# since a session can be pinned to either language (see the language toggle).
+# ---------------------------------------------------------------------------
+DETERMINISTIC_RED_FLAGS: dict[str, list[str]] = {
+    "chest pain": ["chest pain", "chest pressure", "ألم في الصدر", "الم بالصدر", "ضيقة بصدري"],
+    "breathing difficulty": [
+        "can't breathe", "cannot breathe", "difficulty breathing", "shortness of breath",
+        "ما قادر أتنفس", "ماقدر اتنفس", "صعوبة في التنفس", "ضيق تنفس",
+    ],
+    "severe allergic reaction": [
+        "anaphylaxis", "throat is closing", "throat closing", "swelling of my face",
+        "swelling of my throat", "حساسية شديدة", "تورم في الوجه", "تورم في الحلق",
+    ],
+    "stroke signs": [
+        "facial droop", "face is drooping", "slurred speech", "one-sided weakness",
+        "can't move one side", "شلل نصفي", "تدلي الوجه", "تنميل نصف الجسم",
+    ],
+    "severe bleeding": [
+        "won't stop bleeding", "wont stop bleeding", "heavy bleeding", "severe bleeding",
+        "نزيف شديد", "نزيف لا يتوقف",
+    ],
+    "seizure": ["seizure", "convulsion", "convulsing", "تشنج", "نوبة تشنجية"],
+}
+
+
+def _deterministic_red_flags(transcript: str) -> list[str]:
+    """Substring-match the raw transcript against DETERMINISTIC_RED_FLAGS.
+    Case-insensitive; Arabic has no case to fold. Returns the matched
+    category names (not the raw phrases) for display."""
+    lowered = transcript.lower()
+    matched = []
+    for category, phrases in DETERMINISTIC_RED_FLAGS.items():
+        if any(phrase.lower() in lowered for phrase in phrases):
+            matched.append(category)
+    return matched
+
+
+CriticalFieldType = Literal["medication", "allergy", "symptom_duration", "negation"]
+CriticalFieldStatus = Literal["unconfirmed", "confirmed", "corrected", "flagged"]
+
+
+class CriticalField(BaseModel):
+    """One entry in the transcript integrity layer (see module docstring).
+    Tracks not just the extracted value but what was actually said, so a
+    clinician can audit an automated extraction instead of trusting it
+    blindly. `status` starts as Gemini sets it here and is later mutated
+    client-side only when a human confirms/corrects it in the UI — the
+    server doesn't need to know about that mutation, since it only affects
+    what gets displayed/exported, not the escalation logic already computed
+    server-side from the original value."""
+
+    field_type: CriticalFieldType
+    raw_quote: str = Field(description="Verbatim snippet from the transcript this was extracted from.")
+    normalized_value: str = Field(description="The cleaned-up value, e.g. 'Panadol 500mg'.")
+    status: CriticalFieldStatus = Field(
+        default="unconfirmed",
+        description="'confirmed' only if the patient's own words left no reasonable "
+        "doubt; 'flagged' if the raw quote is contradictory or you cannot determine "
+        "a value with reasonable confidence. Never 'corrected' — that only happens "
+        "via human review after this is generated.",
+    )
+    reason: str = Field(
+        default="",
+        description="Why this needs confirmation/is flagged — e.g. 'medication name "
+        "unclear in audio', 'patient stated two different durations'. Empty if status "
+        "is 'confirmed'.",
+    )
+
 
 class IntakeSummary(BaseModel):
     """Structured clinical intake summary extracted from the conversation so far."""
@@ -71,7 +148,10 @@ class IntakeSummary(BaseModel):
     )
     urgency: Urgency = Field(
         description="Overall urgency of the patient's condition based on the "
-        "conversation so far: 'low', 'medium', or 'high'."
+        "conversation so far: 'low', 'medium', or 'high'. This is a suggestion — "
+        "a small deterministic keyword check on the raw transcript can force this "
+        "to 'high' independently of your judgment here; it can never lower what "
+        "you assess, only raise it."
     )
     red_flags: list[str] = Field(
         default_factory=list,
@@ -90,6 +170,26 @@ class IntakeSummary(BaseModel):
         "treats a mentioned condition, an allergy relevant to a mentioned "
         "medication). Do not speculate or diagnose. Empty if none apply.",
     )
+    critical_fields: list[CriticalField] = Field(
+        default_factory=list,
+        description="One entry per critical fact actually mentioned in the "
+        "transcript: every medication (name+dose), every allergy, every symptom's "
+        "duration/onset, and every explicit negation of a high-risk symptom (e.g. "
+        "'no chest pain', 'denies fever'). Do NOT invent an entry for something "
+        "never mentioned — absence of information is not itself a critical field.",
+    )
+    needs_human_review: bool = Field(
+        default=False,
+        description="True if a critical field (medication, allergy, key symptom) "
+        "is missing when it was clearly about to be stated, contradictory, or too "
+        "unclear in the transcript to extract with reasonable confidence — even "
+        "after re-reading the transcript once more. When true, do not guess a "
+        "low-risk classification to fill the gap.",
+    )
+    review_reason: str = Field(
+        default="",
+        description="Why needs_human_review is true. Empty if it's false.",
+    )
     summary_note: str = Field(
         description="One or two sentence plain-language summary of the patient's "
         "situation for a clinician, in English."
@@ -101,6 +201,11 @@ class IntakeResult(BaseModel):
 
     summary: IntakeSummary
     escalate_to_interpreter: bool
+    # Deterministic matches that forced/contributed to escalate_to_interpreter,
+    # for display — kept separate from summary.red_flags (Gemini's own,
+    # possibly-fallible judgment) so the UI/export can show which flags are
+    # the non-negotiable kind.
+    deterministic_flags: list[str] = Field(default_factory=list)
     # Wall-clock time for the Gemini call itself (including any retries),
     # NOT total time since the patient stopped talking — that also includes
     # the debounce wait, which is separate and already surfaced via the
@@ -110,10 +215,11 @@ class IntakeResult(BaseModel):
 
 
 SYSTEM_PROMPT = """\
-You are a clinical intake assistant listening to a real-time bilingual
-Arabic/English conversation between a patient and an intake system. You will
-receive the transcript accumulated so far (the patient may switch between
-Arabic and English mid-sentence; some words may appear in Arabic script).
+You are a clinical intake assistant listening to a real-time Arabic/English
+conversation between a patient and an intake system (each session is pinned
+to one language, but transcripts may still contain the occasional foreign
+word, e.g. a drug brand name). You will receive the transcript accumulated
+so far.
 
 Extract a structured intake summary from the ENTIRE transcript given (not
 just the newest line):
@@ -128,9 +234,24 @@ just the newest line):
   that it could affect). Only state connections a textbook would back up;
   never speculate or diagnose. Leave empty rather than reach for a weak
   connection.
+- critical_fields: one entry per medication, allergy, symptom duration/onset,
+  and negation of a high-risk symptom actually mentioned. For each, give the
+  verbatim raw_quote it came from, a normalized_value, and mark status
+  'flagged' (with a reason) if the audio/transcript was ambiguous, garbled,
+  or contradictory for that specific fact — do not silently pick your best
+  guess and call it 'confirmed'. Only mark 'confirmed' when the patient's
+  words leave no reasonable doubt.
+- needs_human_review + review_reason: true if any critical field above is
+  unclear/contradictory/missing-when-clearly-about-to-be-stated even after
+  re-reading the transcript once more. This is about DATA QUALITY, not
+  urgency — a perfectly calm, low-urgency conversation can still need
+  review if a medication name was unintelligible. Do not guess a low-risk
+  classification to paper over a gap; say so instead.
 - summary_note: a short clinician-facing summary
 
-Urgency guidance (use clinical judgment, err toward caution):
+Urgency guidance (use clinical judgment, err toward caution — this is a
+suggestion; a separate deterministic check on the raw transcript can only
+raise it further, never lower it):
 - high: any emergent red flag — e.g. chest pain, difficulty breathing,
   stroke symptoms (facial droop, slurred speech, one-sided weakness),
   severe/uncontrolled bleeding, anaphylaxis/allergic reaction with swelling
@@ -141,6 +262,16 @@ Urgency guidance (use clinical judgment, err toward caution):
 
 Respond ONLY with the structured JSON described by the schema.
 """
+
+# Sina organizes and structures intake information; it does not diagnose and
+# is not a substitute for emergency services. All escalations require human
+# review. Surfaced in the UI (see frontend/index.html) — kept here too so
+# the two stay in sync if either changes.
+DISCLAIMER = (
+    "Sina collects and organizes intake information. It does not diagnose "
+    "conditions or replace emergency services. All escalations are reviewed "
+    "by a human."
+)
 
 
 IntakeCallback = Callable[[IntakeResult], Awaitable[None]]
@@ -280,13 +411,41 @@ class LLMPipeline:
 
     async def summarize(self, transcript: str) -> IntakeResult:
         """Call Gemini Flash to (re)summarize the given transcript, apply the
-        escalation rule, and fire the registered callbacks."""
+        deterministic escalation rule, and fire the registered callbacks."""
         start = asyncio.get_event_loop().time()
         summary = await self._extract(transcript)
+
+        # Gemini flagged a critical field as uncertain — give it exactly one
+        # more look before accepting "needs human review" as final. Bounded
+        # to one extra call (not a loop) since each retry here is a real,
+        # scarce Gemini request, not a free operation.
+        if summary.needs_human_review:
+            logger.info("needs_human_review on first pass (%s) — re-checking once", summary.review_reason)
+            summary = await self._extract(transcript, recheck=True)
+
         elapsed_ms = (asyncio.get_event_loop().time() - start) * 1000
+
+        # Deterministic red-flag check runs on the raw transcript, not
+        # Gemini's paraphrase — see DETERMINISTIC_RED_FLAGS docstring. Can
+        # only raise urgency/escalation, never lower what Gemini assessed.
+        deterministic_matches = _deterministic_red_flags(transcript)
+        if deterministic_matches:
+            if summary.urgency != "high":
+                logger.warning(
+                    "Deterministic red flag override: Gemini said urgency=%s, "
+                    "forcing 'high' for matches: %s", summary.urgency, deterministic_matches,
+                )
+            summary.urgency = "high"
+            for category in deterministic_matches:
+                flag_text = f"deterministic match: {category}"
+                if flag_text not in summary.red_flags:
+                    summary.red_flags.append(flag_text)
+
+        escalate = summary.urgency == "high" or bool(deterministic_matches)
         result = IntakeResult(
             summary=summary,
-            escalate_to_interpreter=(summary.urgency == "high"),
+            escalate_to_interpreter=escalate,
+            deterministic_flags=deterministic_matches,
             processing_time_ms=elapsed_ms,
         )
         self.latest_result = result
@@ -303,13 +462,20 @@ class LLMPipeline:
 
         return result
 
-    async def _extract(self, transcript: str) -> IntakeSummary:
+    async def _extract(self, transcript: str, recheck: bool = False) -> IntakeSummary:
+        contents = f"Transcript so far:\n\n{transcript}"
+        if recheck:
+            contents += (
+                "\n\n(You previously found a critical field unclear here. Look again "
+                "carefully before deciding needs_human_review is still warranted.)"
+            )
+
         last_error: Optional[Exception] = None
         for attempt in range(MAX_RETRIES):
             try:
                 response = await self._client.aio.models.generate_content(
                     model=GEMINI_MODEL,
-                    contents=f"Transcript so far:\n\n{transcript}",
+                    contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_PROMPT,
                         response_mime_type="application/json",

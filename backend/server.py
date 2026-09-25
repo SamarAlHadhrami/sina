@@ -26,6 +26,13 @@ spirit; an omitted/invalid value defaults to "ar" rather than bilingual):
         ask Sina to speak arbitrary text back (e.g. a summary readout button)
     - text frame (JSON): {"type": "end"}
         client is ending the session; flush any pending summary
+    - text frame (JSON): {"type": "switch_language", "lang": "ar"|"en"}
+        explicit language switch (item 6): closes the current AssemblyAI
+        stream and reconnects with the new language, WITHOUT losing
+        intake history already gathered (the same LLMPipeline instance
+        keeps running). Also triggered internally by a matched voice
+        command (see _detect_switch_command) — never inferred from a
+        single foreign word appearing mid-stream.
 
   Server -> Client (all JSON text frames)
     - {"type": "transcript", "text": ..., "is_final": bool, "turn_order": int,
@@ -34,11 +41,18 @@ spirit; an omitted/invalid value defaults to "ar" rather than bilingual):
         (confidence/low_confidence/language_tag only meaningful when
         is_final; null for partial turns)
     - {"type": "summary", "summary": {...IntakeSummary...}, "escalate_to_interpreter": bool,
-       "processing_time_ms": float}
+       "deterministic_flags": [...], "processing_time_ms": float}
         (processing_time_ms is the Gemini call duration only, not total
         time since the patient stopped talking — the debounce wait is
-        separate and already surfaced via the "Finishing up..." status)
+        separate and already surfaced via the "Finishing up..." status.
+        IntakeSummary now also carries critical_fields (the transcript
+        integrity layer — see llm_pipeline.py) and needs_human_review/
+        review_reason. deterministic_flags lists which of Gemini's
+        red_flags came from the non-negotiable keyword check, not Gemini's
+        own judgment — see DETERMINISTIC_RED_FLAGS in llm_pipeline.py.)
     - {"type": "escalation", "red_flags": [...]}
+    - {"type": "language_switched", "lang": "ar"|"en"}
+        confirms a switch_language request (or voice command) completed
     - {"type": "audio", "context": "speak" | "escalation" | "confirmation", "format": "mp3", "audio_base64": "..."}
     - {"type": "error", "message": "..."}
 
@@ -117,6 +131,24 @@ _ARABIC_CHARS = re.compile(r"[؀-ۿݐ-ݿ]")
 _LATIN_CHARS = re.compile(r"[A-Za-z]")
 
 
+# Explicit voice-command language switching: matched as fixed phrases
+# against a FINAL turn's full text, not inferred from a single foreign word
+# appearing mid-stream (e.g. a drug brand name in English inside Arabic
+# speech) — that kind of inference is exactly what causes unstable
+# switching. A patient has to actually say one of these phrases.
+_SWITCH_TO_EN_PHRASES = ["switch to english", "change to english", "بالانجليزي", "التبديل الى الانجليزية", "غير للانجليزي"]
+_SWITCH_TO_AR_PHRASES = ["switch to arabic", "change to arabic", "بالعربي", "التبديل الى العربية", "غير للعربي"]
+
+
+def _detect_switch_command(text: str) -> Optional[str]:
+    lowered = text.lower()
+    if any(p in lowered for p in _SWITCH_TO_EN_PHRASES):
+        return "en"
+    if any(p in lowered for p in _SWITCH_TO_AR_PHRASES):
+        return "ar"
+    return None
+
+
 def _detect_language_tag(text: str) -> Optional[str]:
     has_arabic = bool(_ARABIC_CHARS.search(text))
     has_latin = bool(_LATIN_CHARS.search(text))
@@ -145,7 +177,13 @@ class SinaSession:
     def __init__(self, websocket: WebSocket, language_codes: Optional[list] = None) -> None:
         self.ws = websocket
         self.tts = TTSClient()
+        # One LLMPipeline for the whole session lifetime, deliberately
+        # untouched by a language switch below — it accumulates plain text
+        # turns regardless of which language produced them, so switching
+        # the STT connection doesn't lose any intake history already
+        # gathered (symptoms/medications/etc. extracted so far stay put).
         self.llm = LLMPipeline(on_summary=self._send_summary, on_escalation=self._send_escalation)
+        self._current_lang = language_codes[0] if language_codes else "ar"
         self.stt = STTClient(on_turn=self._on_stt_turn, language_codes=language_codes)
         self._send_lock = asyncio.Lock()
         # Set when any final turn contributing to the transcript accumulated
@@ -156,6 +194,14 @@ class SinaSession:
         # separately assert confidence the transcript didn't earn. Reset
         # after each summary since that's a fresh batch of turns.
         self._pending_low_confidence = False
+        # Each STT reconnect (language switch) starts AssemblyAI's own
+        # turn_order counter back at 0 — added to every turn_order sent to
+        # the frontend so bubbles from before/after a switch never collide
+        # (the frontend looks bubbles up by turn_order; a collision would
+        # silently overwrite an old bubble with new content).
+        self._turn_order_offset = 0
+        self._highest_turn_order_seen = -1
+        self._switching_language = False
 
     async def start(self) -> None:
         await self.stt.connect()
@@ -169,15 +215,58 @@ class SinaSession:
             logger.exception("Error flushing LLM pipeline on session close")
         await self.stt.close()
 
+    async def switch_language(self, lang: str) -> None:
+        """Explicit language switch (item 6): cleanly closes the current
+        AssemblyAI stream and reconnects with the new language pinned,
+        without touching self.llm — so everything extracted so far stays.
+        Never called from inferring a single foreign word mid-stream; only
+        from an explicit UI action or a matched voice command (see
+        _detect_switch_command)."""
+        if lang == self._current_lang:
+            return
+        self._switching_language = True
+        try:
+            old_stt = self.stt
+            self._turn_order_offset = self._highest_turn_order_seen + 1
+            new_stt = STTClient(on_turn=self._on_stt_turn, language_codes=[lang])
+            await new_stt.connect()
+            self.stt = new_stt
+            self._current_lang = lang
+            await old_stt.close()
+        finally:
+            self._switching_language = False
+        await self._send_json({"type": "language_switched", "lang": lang})
+
     # ---- STT -> frontend + LLM -------------------------------------------------
 
     async def _on_stt_turn(self, turn: dict) -> None:
         is_final = bool(turn.get("end_of_turn"))
+        text = turn.get("transcript") or turn.get("utterance") or ""
+
+        if is_final:
+            switch_to = _detect_switch_command(text)
+            if switch_to:
+                # This callback runs inside the CURRENT STTClient's own
+                # receive-loop task (see stt_client.py's _receive_loop).
+                # switch_language() closes that same client, which awaits
+                # that same task via asyncio.wait_for — awaiting it
+                # synchronously from right here would be the task waiting
+                # on itself (deadlock). Schedule it as a separate task so
+                # this callback returns and the receive loop can proceed
+                # to actually receive the Termination message.
+                asyncio.create_task(self.switch_language(switch_to))
+                return  # command utterance itself isn't clinical content
+
+        raw_turn_order = turn.get("turn_order")
+        turn_order = None
+        if raw_turn_order is not None:
+            turn_order = raw_turn_order + self._turn_order_offset
+            self._highest_turn_order_seen = max(self._highest_turn_order_seen, turn_order)
+
         confidence = _average_word_confidence(turn) if is_final else None
         low_confidence = confidence is not None and confidence < LOW_CONFIDENCE_THRESHOLD
         if low_confidence:
             self._pending_low_confidence = True
-        text = turn.get("transcript") or turn.get("utterance") or ""
         await self._send_json(
             {
                 "type": "transcript",
@@ -187,8 +276,10 @@ class SinaSession:
                 # AssemblyAI sends an unformatted end_of_turn=true Turn message
                 # immediately, then a formatted one for the same turn_order a
                 # moment later — the frontend uses this to update one bubble
-                # per turn instead of appending a duplicate.
-                "turn_order": turn.get("turn_order"),
+                # per turn instead of appending a duplicate. Offset applied
+                # above so turn_order also stays unique across a language
+                # switch's STT reconnect (AssemblyAI restarts at 0 each time).
+                "turn_order": turn_order,
                 "confidence": confidence,
                 "low_confidence": low_confidence,
             }
@@ -214,14 +305,20 @@ class SinaSession:
                 "type": "summary",
                 "summary": result.summary.model_dump(),
                 "escalate_to_interpreter": result.escalate_to_interpreter,
+                "deterministic_flags": result.deterministic_flags,
                 "processing_time_ms": result.processing_time_ms,
             }
         )
         # Escalation already gets its own spoken notice (_send_escalation);
         # don't also speak the generic confirmation on top of it. Also skip
-        # it if any turn in this batch was low-confidence — see
-        # _pending_low_confidence docstring above for why.
-        skip_confirmation = result.escalate_to_interpreter or self._pending_low_confidence
+        # it if any turn in this batch was low-confidence (STT-level) or
+        # Gemini itself flagged a critical field uncertain (extraction-level)
+        # — see _pending_low_confidence docstring above for why.
+        skip_confirmation = (
+            result.escalate_to_interpreter
+            or self._pending_low_confidence
+            or result.summary.needs_human_review
+        )
         self._pending_low_confidence = False
         if not skip_confirmation:
             try:
@@ -267,6 +364,19 @@ class SinaSession:
             except Exception:
                 logger.exception("Error flushing LLM pipeline on client 'end'")
             await self._send_json({"type": "session_ended"})
+
+        elif msg_type == "switch_language":
+            # Runs in the main WebSocket message loop (session_endpoint),
+            # NOT inside the STT receiver task, so awaiting switch_language()
+            # directly here (unlike the voice-command path in _on_stt_turn)
+            # is safe.
+            lang = message.get("lang")
+            if lang in ("ar", "en"):
+                try:
+                    await self.switch_language(lang)
+                except Exception:
+                    logger.exception("Error switching language")
+                    await self._send_json({"type": "error", "message": "Language switch failed"})
 
         else:
             logger.warning("Unknown client message type: %r", msg_type)
@@ -322,7 +432,14 @@ async def session_endpoint(websocket: WebSocket) -> None:
 
             audio_bytes = message.get("bytes")
             if audio_bytes is not None:
-                await session.stt.send_audio(audio_bytes)
+                # A language switch briefly tears down and replaces
+                # session.stt; audio arriving in that window could hit a
+                # client that's mid-close. Drop it rather than crash the
+                # whole session over a lost ~85ms audio chunk.
+                try:
+                    await session.stt.send_audio(audio_bytes)
+                except Exception:
+                    logger.debug("Dropped audio chunk during STT reconnect")
                 continue
 
             text = message.get("text")

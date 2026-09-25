@@ -13,10 +13,12 @@ video.
 
 ## Stack
 
-- **STT**: AssemblyAI Universal-3.5 Pro Streaming (`speech_model=universal-3-5-pro`) — the
-  only AssemblyAI model with native Arabic↔English code-switching.
+- **STT**: AssemblyAI Universal-3.5 Pro Streaming (`speech_model=universal-3-5-pro`),
+  Medical Mode (`domain=medical`), single-language per session (see Safety
+  Architecture below — code-switching is deliberately unused).
 - **LLM**: Gemini Flash (`gemini-3.6-flash`) — structured JSON extraction via
-  Pydantic `response_schema`.
+  Pydantic `response_schema`, plus a deterministic keyword layer that Gemini
+  cannot override (see below).
 - **TTS**: ElevenLabs (`eleven_flash_v2_5`, voice "Sarah") — free tier only (see
   Known Limitations).
 - **Backend**: FastAPI, one WebSocket per session at `/ws/session`.
@@ -24,6 +26,71 @@ video.
 
 All API keys live in `.env` (gitignored): `ASSEMBLYAI_API_KEY`,
 `GEMINI_API_KEY`, `ELEVENLABS_API_KEY`.
+
+## Safety architecture (core narrative)
+
+Sina's design shifted from "LLM judgment with sentiment cues" to **deterministic
+safety rules layered under LLM extraction** — the LLM structures information;
+it does not get the final word on whether something is dangerous.
+
+1. **Deterministic urgency.** A small, reviewed, bilingual keyword list
+   (chest pain, breathing difficulty, severe allergic reaction, stroke signs,
+   severe bleeding, seizure) is matched directly against the raw transcript
+   in Python — not Gemini's paraphrase of it. A match forces `urgency=high`
+   and escalation regardless of what Gemini assessed; it can only add an
+   escalation, never remove one. Proven live: mocked Gemini into wrongly
+   returning `urgency=low` on a chest-pain transcript, confirmed the
+   deterministic layer forced it back to `high` anyway.
+   (`DETERMINISTIC_RED_FLAGS` in `backend/llm_pipeline.py`.)
+2. **Explicit uncertainty over false confidence.** Every medication, allergy,
+   symptom duration/onset, and negation of a high-risk symptom becomes a
+   `critical_fields` entry: the verbatim quote, the normalized value, and a
+   status Gemini itself must set to `flagged` (with a reason) rather than
+   silently guessing when the audio was ambiguous. If any critical field is
+   unresolved, `needs_human_review` is set — a data-quality signal, kept
+   separate from urgency, since a calm conversation with a mumbled drug name
+   isn't an emergency but does need a human to check it. Gemini gets exactly
+   one re-check before this is accepted as final (bounded — each retry is a
+   real, scarce Gemini request, not a loop).
+3. **Transcript integrity layer.** Each critical field carries what was
+   said, what was extracted, and its confirm/correct status — surfaced in
+   the UI with tap-to-fix (not voice-only correction, which would compound
+   an error already caused by mishearing) and included in the PDF export.
+4. **AssemblyAI Medical Mode + keyterms.** `domain=medical` is enabled on
+   the streaming connection — confirmed real and available on this account's
+   tier by checking the `Begin` message's `configuration.domain` echo
+   (`"medical-v1"`) and by a live probe showing a rejected value's error
+   message naming `medical-v1` as the only accepted one. A compact,
+   locally-relevant `keyterms_prompt` (medication names, symptom terms,
+   "Sina") boosts recognition without being broad enough to bias the model
+   toward hallucinating listed terms that weren't said.
+5. **PII redaction — narrow, export-only.** Phone, email, and DOB are
+   reliably redacted via pattern matching in the PDF export only; the live
+   on-screen transcript (used for escalation/clinical logic) stays
+   unredacted. Symptoms, medications, allergies, and conditions are never
+   touched. Honest limitation: person names and addresses have no reliable
+   structure to regex-match — a naive name-guesser risks redacting clinical
+   terms that happen to look like names, which is worse than under-redacting.
+   What's implemented catches the specific self-introduction phrasing an
+   intake conversation actually uses ("my name is X", "اسمي X"), not a
+   general name detector.
+6. **Explicit language switching, not silent inference.** The
+   Arabic/English toggle requires an actual tap (or a matched voice phrase
+   like "switch to English") — never inferred from a single foreign word
+   appearing mid-stream (a drug brand name in English inside Arabic speech
+   does not trigger a switch). Switching cleanly closes the current
+   AssemblyAI connection and opens a new one pinned to the new language,
+   while the same `LLMPipeline` instance keeps running underneath — nothing
+   extracted so far is lost. Verified live: fed a turn in Arabic, switched
+   to English, fed a turn in English, confirmed both are present together
+   in the accumulated transcript.
+7. **Dropped:** sentiment analysis as an urgency input, and broad generic
+   entity highlighting. Neither existed as shipped code before this either —
+   noted here because they were cut from consideration, not removed from
+   something that shipped.
+8. **Disclaimer**, visible at all times: "Sina collects and organizes intake
+   information. It does not diagnose conditions or replace emergency
+   services. All escalations are reviewed by a human."
 
 ## Repo layout
 
@@ -291,6 +358,16 @@ replies `{"type":"session_ended"}` once safe to close the socket).
 
 ## Known limitations (to mention transparently in the demo)
 
+- **Gemini has a daily cap, not just per-minute**: `generate_content_free_tier_requests`
+  is limited to 20/day for `gemini-3.6-flash` on the free tier, separate from
+  the 5/min limit. The uncertain-critical-field recheck (one bounded retry —
+  see Safety Architecture) adds an extra call on ambiguous turns, so this can
+  be hit faster than before. Confirmed live mid-session; recovers on its own
+  (retry delay in the error response), not a true 24h lockout in practice.
+- **PII redaction is narrow by design, not exhaustive**: see Safety
+  Architecture above — phone/email/DOB are reliable, name/address are
+  pattern-matched against common self-introduction phrasing only, not a
+  general detector.
 - **ElevenLabs free tier**: no library/community voices available via API
   (`402 payment_required` on any non-default voice_id — confirmed live, even
   for a voice already saved to the account). So Sina uses "Sarah" (US-accented)

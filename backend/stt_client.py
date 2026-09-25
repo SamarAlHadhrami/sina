@@ -65,16 +65,33 @@ TURN_DETECTION_MODE = "max_accuracy"
 MIN_TURN_SILENCE_MS = "200"
 MAX_TURN_SILENCE_MS = "2000"
 
+# Medical Mode. Unlike prompt/keyterms_prompt below, THIS one is confirmed
+# real and functional the same rigorous way `mode` was: it's echoed back in
+# the Begin message's `configuration.domain` field (as "medical-v1"), and a
+# live probe with an invalid value returned a validation error naming
+# "medical-v1" as the only accepted one — confirming it's both real and
+# available on this account's tier, not silently ignored.
+DOMAIN = "medical"
+
 # Domain-context bias. Neither this nor KEYTERMS below could be confirmed
 # via the configuration echo (free-text/list params don't appear there
-# regardless of validity, unlike `mode`) — accepted without error and left
-# in per AssemblyAI's documented parameter list for Pro streaming, but
-# real-world accuracy impact wasn't independently measurable this session.
+# regardless of validity, unlike `mode`/`domain` above) — accepted without
+# error and left in per AssemblyAI's documented parameter list for Pro
+# streaming, but real-world accuracy impact wasn't independently measurable
+# this session.
 DOMAIN_PROMPT = (
     "Clinical patient intake conversation, bilingual Arabic and English, "
     "includes medication names, symptoms, and allergy information."
 )
-KEYTERMS = ["Sina", "Panadol", "aspirin", "ibuprofen", "chest pain", "headache", "allergy"]
+# Compact and locally-relevant on purpose, not exhaustive — an over-broad
+# keyterms list can bias the model toward hallucinating listed terms that
+# weren't actually said, which would be worse than not boosting them at all.
+KEYTERMS = [
+    "Sina",
+    "Panadol", "aspirin", "ibuprofen", "penicillin",
+    "chest pain", "headache", "shortness of breath", "dizziness",
+    "fever", "nausea", "allergy", "asthma",
+]
 
 # Called with each raw "Turn" message dict from AssemblyAI.
 TranscriptCallback = Callable[[dict], Awaitable[None]]
@@ -121,6 +138,7 @@ class STTClient:
             ("speech_model", SPEECH_MODEL),
             ("format_turns", "true"),  # ask AssemblyAI to punctuate/case final turns
             ("mode", TURN_DETECTION_MODE),
+            ("domain", DOMAIN),
             ("min_turn_silence", MIN_TURN_SILENCE_MS),
             ("max_turn_silence", MAX_TURN_SILENCE_MS),
             ("prompt", DOMAIN_PROMPT),
