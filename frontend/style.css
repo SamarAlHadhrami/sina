@@ -284,6 +284,60 @@ main {
 
 /* ---------- mic panel ---------- */
 
+.patient-form-hint {
+  margin: -6px 0 16px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+#patientForm {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.patient-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.patient-form-field input {
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--text);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.patient-form-field input:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.patient-form-submit {
+  align-self: flex-start;
+  background: var(--brand);
+  color: white;
+  border: none;
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 22px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s var(--ease-standard);
+}
+
+.patient-form-submit:hover {
+  background: var(--brand-dark);
+}
+
 .mic-panel {
   display: flex;
   flex-direction: column;

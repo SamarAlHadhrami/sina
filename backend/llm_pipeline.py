@@ -32,6 +32,12 @@ load_dotenv()
 logger = logging.getLogger("sina.llm")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Optional. If a call fails with a quota/rate-limit error (429, including
+# the daily-cap error documented in Known Limitations) and this is set, one
+# extra attempt is made with this key before giving up — not retried
+# per-attempt like the 503 loop below, just once, since the point is
+# "the primary key is out for now," not "keep hammering both."
+GEMINI_API_KEY_FALLBACK = os.getenv("GEMINI_API_KEY_FALLBACK")
 GEMINI_MODEL = "gemini-3.6-flash"
 
 # Flash occasionally returns a transient 503 "high demand" ServerError even on
@@ -39,6 +45,14 @@ GEMINI_MODEL = "gemini-3.6-flash"
 # backoff before giving up.
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 2.0
+
+
+def _is_quota_error(e: genai_errors.ClientError) -> bool:
+    """429s from Gemini cover both the per-minute and per-day free-tier caps
+    (both confirmed live this project — see README Known Limitations).
+    Checked by status code, not message text, since the message wording
+    differs between the two."""
+    return getattr(e, "code", None) == 429
 
 # The Gemini key in use is on the free tier: 5 requests/minute for this model
 # (confirmed empirically via a live 429 RESOURCE_EXHAUSTED response). A live
@@ -194,6 +208,15 @@ class IntakeSummary(BaseModel):
         description="One or two sentence plain-language summary of the patient's "
         "situation for a clinician, in English."
     )
+    agent_reply: str = Field(
+        description="A short, natural SPOKEN reply to the patient (not clinician-facing "
+        "prose) in the SAME language as the conversation — never mixed. This is what "
+        "gets read aloud via TTS, replacing a generic acknowledgment. See the system "
+        "prompt's conversational-flow rules for what it should say at each stage. "
+        "If a red-flag escalation applies, this is still generated normally but the "
+        "caller mutes it in favor of the escalation notice — do not try to write an "
+        "'emergency' reply yourself, just answer the conversational turn naturally.",
+    )
 
 
 class IntakeResult(BaseModel):
@@ -248,6 +271,7 @@ just the newest line):
   review if a medication name was unintelligible. Do not guess a low-risk
   classification to paper over a gap; say so instead.
 - summary_note: a short clinician-facing summary
+- agent_reply: see "Conversational reply" below
 
 Urgency guidance (use clinical judgment, err toward caution — this is a
 suggestion; a separate deterministic check on the raw transcript can only
@@ -259,6 +283,37 @@ raise it further, never lower it):
   abdominal pain, high fever in an infant.
 - medium: symptoms that need timely but not emergency care.
 - low: mild or chronic symptoms, routine follow-up, medication refill requests.
+
+Conversational reply (agent_reply field):
+You will be given the patient's name, the active conversation language, and
+what you said last turn (if anything) as extra context alongside the
+transcript. Write agent_reply according to where the conversation actually
+is right now:
+- If the transcript so far is just a greeting ("Hello Sina" / "مرحبا سينا"
+  or similar) with no symptom information yet: greet back using the
+  patient's name and invite them to describe what's happening. Example
+  shape (write your own wording, in the active language): "Hello [Name],
+  please tell me what's happening today."
+- If the patient has described symptoms but medications, allergies, or
+  duration/onset are still missing: ask ONE natural follow-up question
+  about ONE missing thing at a time — the single most clinically relevant
+  gap, not a checklist. Address the patient by name where it fits
+  naturally, don't force it into every sentence.
+- Once symptoms, medications, and allergies have all been covered (each
+  either stated or the patient has said they don't apply): give a natural
+  closing statement, not another question — e.g. thank them and say a
+  clinician will follow up.
+- ALWAYS in the SAME language as the transcript (the active language given
+  to you) — never switch languages, never mix.
+- Do NOT repeat what you already said last turn (given to you as context).
+  If nothing has changed since then, keep it brief and move the
+  conversation forward rather than restating the same question.
+- Do NOT write an "emergency" or alarmed reply yourself, even if you judge
+  urgency to be high — a separate, deterministic mechanism handles the
+  actual escalation notice, and your agent_reply may be muted in favor of
+  it. Just answer the conversational turn naturally, as if you didn't know
+  what happens next.
+- Keep it short — this is spoken aloud, not read.
 
 Respond ONLY with the structured JSON described by the schema.
 """
@@ -276,6 +331,17 @@ DISCLAIMER = (
 
 IntakeCallback = Callable[[IntakeResult], Awaitable[None]]
 EscalationCallback = Callable[[IntakeResult], Awaitable[None]]
+
+
+class PatientInfo(BaseModel):
+    """Collected once via the pre-session typed form, before any voice
+    starts — deliberately just enough to personalize the spoken reply
+    (name) and give light context (age/occupation). NOT a clinical
+    history field; all clinical content still comes through voice only."""
+
+    name: str = ""
+    age: str = ""
+    occupation: str = ""
 
 
 class LLMPipeline:
@@ -312,18 +378,34 @@ class LLMPipeline:
         on_summary: Optional[IntakeCallback] = None,
         on_escalation: Optional[EscalationCallback] = None,
         debounce_seconds: float = DEBOUNCE_SECONDS,
+        patient_info: Optional[PatientInfo] = None,
+        language: str = "ar",
     ) -> None:
         if not GEMINI_API_KEY:
             raise RuntimeError("GEMINI_API_KEY is not set. Add it to your .env file.")
 
         self._client = genai.Client(api_key=GEMINI_API_KEY)
+        self._fallback_client = (
+            genai.Client(api_key=GEMINI_API_KEY_FALLBACK) if GEMINI_API_KEY_FALLBACK else None
+        )
         self._on_summary = on_summary
         self._on_escalation = on_escalation
         self._debounce_seconds = debounce_seconds
+        self.patient_info = patient_info or PatientInfo()
+        # Mutable — updated by SinaSession.switch_language() when the
+        # patient explicitly switches, so agent_reply is generated in
+        # whichever language is currently active without recreating this
+        # pipeline (which would lose everything else tracked below).
+        self.current_language = language
 
         self._final_lines: list[str] = []
         self._lock = asyncio.Lock()
         self.latest_result: Optional[IntakeResult] = None
+        # What Sina last said out loud, given to Gemini as context so a
+        # re-summarize over the whole accumulated transcript (which happens
+        # on every debounce window, not just once) doesn't repeat the same
+        # greeting or question turn after turn.
+        self._last_agent_reply: Optional[str] = None
 
         self._last_call_at: float = float("-inf")
         self._debounce_task: Optional[asyncio.Task] = None
@@ -332,6 +414,13 @@ class LLMPipeline:
         # teardown) — each such call would otherwise burn another scarce
         # free-tier Gemini request for a result we already have.
         self._last_summarized_transcript: Optional[str] = None
+
+    def set_language(self, language: str) -> None:
+        """Called by SinaSession.switch_language() after an explicit
+        language switch, so the next agent_reply is generated in the new
+        language without recreating this pipeline (which would lose the
+        accumulated transcript/state this class exists to preserve)."""
+        self.current_language = language
 
     async def on_turn(self, turn: dict) -> None:
         """
@@ -449,6 +538,10 @@ class LLMPipeline:
             processing_time_ms=elapsed_ms,
         )
         self.latest_result = result
+        # Remembered so the NEXT call (re-summarizing the whole transcript
+        # again, per the debounce design) knows what was already said and
+        # doesn't repeat the same greeting/question.
+        self._last_agent_reply = summary.agent_reply
 
         if result.escalate_to_interpreter:
             logger.warning("HIGH urgency detected — escalating to human interpreter: %s",
@@ -462,26 +555,42 @@ class LLMPipeline:
 
         return result
 
-    async def _extract(self, transcript: str, recheck: bool = False) -> IntakeSummary:
-        contents = f"Transcript so far:\n\n{transcript}"
+    def _build_contents(self, transcript: str, recheck: bool) -> str:
+        info = self.patient_info
+        context_lines = [
+            f"Patient name: {info.name or '(not given)'}",
+            f"Patient age: {info.age or '(not given)'}",
+            f"Patient occupation: {info.occupation or '(not given)'}",
+            f"Active conversation language: {'Arabic' if self.current_language == 'ar' else 'English'}",
+        ]
+        if self._last_agent_reply:
+            context_lines.append(f"What you said last turn (do not repeat): {self._last_agent_reply!r}")
+        contents = "\n".join(context_lines) + f"\n\nTranscript so far:\n\n{transcript}"
         if recheck:
             contents += (
                 "\n\n(You previously found a critical field unclear here. Look again "
                 "carefully before deciding needs_human_review is still warranted.)"
             )
+        return contents
+
+    async def _call_gemini(self, client: "genai.Client", contents: str):
+        return await client.aio.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=IntakeSummary,
+            ),
+        )
+
+    async def _extract(self, transcript: str, recheck: bool = False) -> IntakeSummary:
+        contents = self._build_contents(transcript, recheck)
 
         last_error: Optional[Exception] = None
         for attempt in range(MAX_RETRIES):
             try:
-                response = await self._client.aio.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT,
-                        response_mime_type="application/json",
-                        response_schema=IntakeSummary,
-                    ),
-                )
+                response = await self._call_gemini(self._client, contents)
                 return IntakeSummary.model_validate_json(response.text)
             except genai_errors.ServerError as e:
                 # Transient 503 "high demand" errors are common on Flash; back off and retry.
@@ -491,6 +600,24 @@ class LLMPipeline:
                 )
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
+            except genai_errors.ClientError as e:
+                # A 429 (per-minute OR the daily cap, both confirmed live
+                # this project) won't resolve with a couple more seconds of
+                # backoff the way a 503 does, so don't burn the retry loop
+                # on the same exhausted key — go straight to the fallback
+                # key once, if one is configured, instead.
+                if _is_quota_error(e) and self._fallback_client:
+                    logger.warning(
+                        "Primary Gemini key hit quota (%s) — retrying once with fallback key", e
+                    )
+                    try:
+                        response = await self._call_gemini(self._fallback_client, contents)
+                        logger.warning("Fallback Gemini key succeeded.")
+                        return IntakeSummary.model_validate_json(response.text)
+                    except Exception as fallback_error:
+                        logger.error("Fallback Gemini key ALSO failed: %s", fallback_error)
+                        raise fallback_error from e
+                raise
 
         assert last_error is not None
         raise last_error

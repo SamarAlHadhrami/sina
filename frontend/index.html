@@ -57,7 +57,31 @@
       </div>
     </div>
 
-    <section class="panel mic-panel">
+    <section class="panel patient-form-panel" id="patientFormPanel">
+      <h2>Before we start</h2>
+      <p class="patient-form-hint">
+        Just a few details to personalize the conversation — all clinical
+        information (symptoms, medications, allergies) is collected by
+        voice only, not here.
+      </p>
+      <form id="patientForm">
+        <label class="patient-form-field">
+          <span>Name</span>
+          <input type="text" id="patientName" name="name" required autocomplete="name" />
+        </label>
+        <label class="patient-form-field">
+          <span>Age</span>
+          <input type="text" id="patientAge" name="age" required autocomplete="off" inputmode="numeric" />
+        </label>
+        <label class="patient-form-field">
+          <span>Occupation</span>
+          <input type="text" id="patientOccupation" name="occupation" autocomplete="organization-title" />
+        </label>
+        <button type="submit" class="patient-form-submit">Continue</button>
+      </form>
+    </section>
+
+    <section class="panel mic-panel" id="micPanel" hidden>
       <fieldset class="lang-toggle" id="langToggle">
         <legend>Listening language</legend>
         <label class="lang-toggle-option">

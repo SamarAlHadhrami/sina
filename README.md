@@ -91,6 +91,17 @@ it does not get the final word on whether something is dangerous.
 8. **Disclaimer**, visible at all times: "Sina collects and organizes intake
    information. It does not diagnose conditions or replace emergency
    services. All escalations are reviewed by a human."
+9. **Conversational loop, one call per turn batch.** A pre-session typed
+   form (name/age/occupation — no clinical fields) personalizes the
+   conversation before any voice starts. The existing Gemini extraction
+   call was extended, not doubled, with an `agent_reply` field: it greets
+   the patient by name, asks one natural follow-up at a time for whatever's
+   still missing (medication/allergy/duration), then closes once those are
+   covered. `agent_reply` is muted on an escalating turn — the escalation
+   notice always takes priority, never a routine question. A second Gemini
+   API key can be set as `GEMINI_API_KEY_FALLBACK` in `.env`; on a 429
+   (either the per-minute or daily cap), one attempt is made with it before
+   giving up, logged clearly either way.
 
 ## Repo layout
 
@@ -378,6 +389,9 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   WaveNet), but requires a GCP billing account (card on file) to enable the
   API at all, so it doesn't avoid the "add a payment method" issue either.
   **Decision: stay on ElevenLabs free tier, disclose this limitation in demo.**
+  Re-verified: the account's voice list now includes a native Arabic voice
+  ("Wiam", `ar` modern standard) — but it's a library voice, and hits the
+  identical 402 on API use. Still unresolved without a paid plan.
 - **Gemini free tier**: 5 requests/minute, addressed via debounce (see above).
   Trade-off: escalation detection can lag ~13s behind the actual utterance.
 - **STT→TTS round-trip artifact**: when testing by feeding synthesized TTS

@@ -12,6 +12,9 @@
   const STT_SAMPLE_RATE = 16000;
 
   const el = {
+    patientFormPanel: document.getElementById("patientFormPanel"),
+    patientForm: document.getElementById("patientForm"),
+    micPanel: document.getElementById("micPanel"),
     micButton: document.getElementById("micButton"),
     micHint: document.getElementById("micHint"),
     langToggle: document.getElementById("langToggle"),
@@ -52,6 +55,23 @@
   let isRecording = false;
 
   let escalationConnectedTimer = null;
+
+  // Pre-session typed form (name/age/occupation) — collected once before
+  // the mic button appears, sent as connection query params so it's
+  // available for the very first Gemini call. Nothing clinical here; all
+  // symptom/medication/allergy info still comes through voice only.
+  let patientInfo = { name: "", age: "", occupation: "" };
+
+  el.patientForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    patientInfo = {
+      name: document.getElementById("patientName").value.trim(),
+      age: document.getElementById("patientAge").value.trim(),
+      occupation: document.getElementById("patientOccupation").value.trim(),
+    };
+    el.patientFormPanel.hidden = true;
+    el.micPanel.hidden = false;
+  });
 
   // ---------------------------------------------------------------------
   // Status / UI helpers
@@ -428,7 +448,13 @@
   function wsUrl() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const lang = getLangMode();
-    return `${proto}://${location.host}/ws/session?lang=${lang}`;
+    const params = new URLSearchParams({
+      lang,
+      name: patientInfo.name,
+      age: patientInfo.age,
+      occupation: patientInfo.occupation,
+    });
+    return `${proto}://${location.host}/ws/session?${params.toString()}`;
   }
 
   function connectWebSocket() {
