@@ -389,9 +389,14 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   WaveNet), but requires a GCP billing account (card on file) to enable the
   API at all, so it doesn't avoid the "add a payment method" issue either.
   **Decision: stay on ElevenLabs free tier, disclose this limitation in demo.**
-  Re-verified: the account's voice list now includes a native Arabic voice
-  ("Wiam", `ar` modern standard) — but it's a library voice, and hits the
-  identical 402 on API use. Still unresolved without a paid plan.
+  Re-verified definitively via `voices.get_all()`'s `category` field, not
+  just a 402 on one voice_id: all 21 free-tier voices in this account are
+  `category: "premade"` and every one is `language: "en"`; the only
+  Arabic-labeled voice ("Wiam") is `category: "professional"` — ElevenLabs'
+  paid/library tier, exactly what 402s for free accounts. No free Arabic
+  voice exists in this account, full stop — not a guess, a direct read of
+  the category field. Confirmed with `eleven_flash_v2_5` (the model already
+  in use, which does support Arabic output regardless of voice accent).
 - **Gemini free tier**: 5 requests/minute, addressed via debounce (see above).
   Trade-off: escalation detection can lag ~13s behind the actual utterance.
 - **STT→TTS round-trip artifact**: when testing by feeding synthesized TTS
