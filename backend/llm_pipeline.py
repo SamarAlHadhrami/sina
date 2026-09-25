@@ -608,15 +608,33 @@ class LLMPipeline:
                 # key once, if one is configured, instead.
                 if _is_quota_error(e) and self._fallback_client:
                     logger.warning(
-                        "Primary Gemini key hit quota (%s) — retrying once with fallback key", e
+                        "Primary Gemini key hit quota (%s) — switching to fallback key", e
                     )
-                    try:
-                        response = await self._call_gemini(self._fallback_client, contents)
-                        logger.warning("Fallback Gemini key succeeded.")
-                        return IntakeSummary.model_validate_json(response.text)
-                    except Exception as fallback_error:
-                        logger.error("Fallback Gemini key ALSO failed: %s", fallback_error)
-                        raise fallback_error from e
+                    # A bare single attempt on the fallback key would treat
+                    # it worse than the primary one: a transient 503 there
+                    # (confirmed live to happen — same "high demand" issue,
+                    # different key) would fail the whole request even
+                    # though a couple seconds' backoff would likely have
+                    # recovered it, exactly like the primary loop above.
+                    fallback_error: Optional[Exception] = None
+                    for fb_attempt in range(MAX_RETRIES):
+                        try:
+                            response = await self._call_gemini(self._fallback_client, contents)
+                            logger.warning("Fallback Gemini key succeeded.")
+                            return IntakeSummary.model_validate_json(response.text)
+                        except genai_errors.ServerError as fb_e:
+                            fallback_error = fb_e
+                            logger.warning(
+                                "Fallback key ServerError on attempt %d/%d: %s",
+                                fb_attempt + 1, MAX_RETRIES, fb_e,
+                            )
+                            if fb_attempt < MAX_RETRIES - 1:
+                                await asyncio.sleep(RETRY_BACKOFF_SECONDS * (fb_attempt + 1))
+                        except Exception as fb_e:
+                            fallback_error = fb_e
+                            break
+                    logger.error("Fallback Gemini key ALSO failed: %s", fallback_error)
+                    raise fallback_error from e
                 raise
 
         assert last_error is not None
