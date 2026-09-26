@@ -138,10 +138,28 @@ logger = logging.getLogger("sina.server")
 
 app = FastAPI(title="Sina")
 
+
+class NoCacheStaticFiles(StaticFiles):
+    """StaticFiles serves index.html/app.js/style.css with only an ETag by
+    default — no explicit Cache-Control — which real mobile browsers can
+    still cache more eagerly than intended (confirmed: a fix that was
+    verifiably live server-side, byte-for-byte, still reproduced the OLD
+    bug on a real phone browser until forcing a fresh load). `no-cache`
+    forces revalidation against the ETag on every request instead of
+    silently reusing a stale cached copy after a deploy — cheap for a
+    handful of small frontend files, and removes an entire class of
+    "the fix is live but you're still seeing the old bug" confusion."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Serve the frontend, if present, so the whole thing can run as one dev server.
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 if FRONTEND_DIR.exists():
-    app.mount("/static", StaticFiles(directory=FRONTEND_DIR, html=True), name="static")
+    app.mount("/static", NoCacheStaticFiles(directory=FRONTEND_DIR, html=True), name="static")
 
 
 @app.get("/")
