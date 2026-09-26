@@ -55,6 +55,10 @@
         "voice only, not here.",
       fieldName: "Name",
       fieldAge: "Age",
+      fieldGender: "Gender",
+      genderSelect: "Select…",
+      genderMale: "Male",
+      genderFemale: "Female",
       fieldOccupation: "Occupation",
       continueButton: "Continue",
       listeningLanguageLegend: "Listening language",
@@ -132,6 +136,10 @@
         "(الأعراض، الأدوية، الحساسية) صوتيًا فقط، وليس هنا.",
       fieldName: "الاسم",
       fieldAge: "العمر",
+      fieldGender: "الجنس",
+      genderSelect: "اختر…",
+      genderMale: "ذكر",
+      genderFemale: "أنثى",
       fieldOccupation: "المهنة",
       continueButton: "متابعة",
       listeningLanguageLegend: "لغة الاستماع",
@@ -313,13 +321,14 @@
   // the mic button appears, sent as connection query params so it's
   // available for the very first Gemini call. Nothing clinical here; all
   // symptom/medication/allergy info still comes through voice only.
-  let patientInfo = { name: "", age: "", occupation: "" };
+  let patientInfo = { name: "", age: "", gender: "", occupation: "" };
 
   el.patientForm.addEventListener("submit", (event) => {
     event.preventDefault();
     patientInfo = {
       name: document.getElementById("patientName").value.trim(),
       age: document.getElementById("patientAge").value.trim(),
+      gender: document.getElementById("patientGender").value.trim(),
       occupation: document.getElementById("patientOccupation").value.trim(),
     };
     el.patientFormPanel.hidden = true;
@@ -856,6 +865,7 @@
       lang,
       name: patientInfo.name,
       age: patientInfo.age,
+      gender: patientInfo.gender,
       occupation: patientInfo.occupation,
     });
     return `${proto}://${location.host}/ws/session?${params.toString()}`;
@@ -1198,7 +1208,7 @@
     currentUrgency = null;
     escalationState = null;
 
-    patientInfo = { name: "", age: "", occupation: "" };
+    patientInfo = { name: "", age: "", gender: "", occupation: "" };
     el.patientForm.reset();
     el.micPanel.hidden = true;
     el.patientFormPanel.hidden = false;

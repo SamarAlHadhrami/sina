@@ -50,19 +50,17 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Flash occasionally returns a transient 503 "high demand" ServerError even on
-# a valid request (confirmed empirically); retry briefly before giving up on
-# this tier and moving to the next one (fallback key, then Groq).
-#
-# Latency fix: this used to be 3 attempts with 2s/4s exponential backoff —
-# up to ~6s of pure sleep PER TIER before falling through, on top of the
-# actual (failing) API calls themselves. For a chained failure (primary ->
-# fallback -> Groq) that could add up to 15-20+ seconds before a reply ever
-# reached the patient. Tightened to 2 attempts (one retry) with a flat,
-# short backoff — a few seconds total per tier, not per-attempt — since the
-# point of retrying at all is to absorb a genuinely transient blip, not to
-# patiently wait out a real outage while the conversation stalls.
-MAX_RETRIES = 2
+# Latency fix (2nd round): Gemini's own generation time varies a lot
+# (English replies were observed live taking 7-15s on some turns, vs
+# Arabic's more consistent timing) — a SECOND attempt on a slow/failing
+# call doubles that wait for no benefit, since Gemini being slow once
+# usually means it's slow again immediately after. Reduced to a single
+# attempt per tier (no retry at all): if Gemini fails or errors, fall
+# through to Groq immediately rather than trying Gemini twice first.
+# RETRY_BACKOFF_SECONDS is now unused in practice (kept, harmless, in case
+# a retry is ever reintroduced) since MAX_RETRIES=1 means the "retry" branch
+# in each loop below never executes.
+MAX_RETRIES = 1
 RETRY_BACKOFF_SECONDS = 0.6
 
 
@@ -188,8 +186,10 @@ class IntakeSummary(BaseModel):
 
     symptoms: list[str] = Field(
         default_factory=list,
-        description="Symptoms the patient has described, in plain clinical English "
-        "(translate if the patient spoke Arabic), e.g. 'chest pain', 'shortness of breath'.",
+        description="Symptoms the patient has described, in plain clinical terms, "
+        "in the ACTIVE CONVERSATION LANGUAGE given to you (not always English) — "
+        "e.g. 'chest pain' for an English session, the equivalent Arabic phrase "
+        "for an Arabic session.",
     )
     medications: list[str] = Field(
         default_factory=list,
@@ -217,11 +217,13 @@ class IntakeSummary(BaseModel):
         description="State the clinical IMPLICATION of a connection between "
         "separately-mentioned facts, not just that the facts co-occurred — e.g. "
         "patient mentions daily aspirin earlier and chest pain later: write "
-        "'Patient already on aspirin — may increase bleeding risk', NOT 'Patient "
-        "reports aspirin use alongside chest pain.' Only include well-established, "
+        "'Patient already on aspirin — may increase bleeding risk' (translate this "
+        "example into the active conversation language), NOT 'Patient reports "
+        "aspirin use alongside chest pain.' Only include well-established, "
         "textbook-level connections (drug-symptom interactions, a medication that "
         "treats a mentioned condition, an allergy relevant to a mentioned "
-        "medication). Do not speculate or diagnose. Empty if none apply.",
+        "medication). Do not speculate or diagnose. Empty if none apply. Write in "
+        "the ACTIVE CONVERSATION LANGUAGE given to you, not always English.",
     )
     critical_fields: list[CriticalField] = Field(
         default_factory=list,
@@ -245,7 +247,9 @@ class IntakeSummary(BaseModel):
     )
     summary_note: str = Field(
         description="One or two sentence plain-language summary of the patient's "
-        "situation for a clinician, in English."
+        "situation for a clinician, in the ACTIVE CONVERSATION LANGUAGE given to "
+        "you (not always English) — the whole summary card should read in one "
+        "consistent language matching the session, not mix languages."
     )
     agent_reply: str = Field(
         description="A short, natural SPOKEN reply to the patient (not clinician-facing "
@@ -302,7 +306,8 @@ so far.
 
 Extract a structured intake summary from the ENTIRE transcript given (not
 just the newest line):
-- symptoms: every symptom mentioned, translated into plain English
+- symptoms: every symptom mentioned, in the active conversation language (see
+  below) — do not translate to English for an Arabic session
 - medications: every medication mentioned
 - allergies: every allergy mentioned
 - urgency: your overall clinical triage judgment given everything said so far
@@ -326,7 +331,10 @@ just the newest line):
   urgency — a perfectly calm, low-urgency conversation can still need
   review if a medication name was unintelligible. Do not guess a low-risk
   classification to paper over a gap; say so instead.
-- summary_note: a short clinician-facing summary
+- summary_note: a short clinician-facing summary, in the active conversation
+  language — the whole summary card (symptoms, clinical_notes, summary_note)
+  should read in one consistent language matching the session, never English
+  by default for an Arabic session
 - agent_reply + conversation_complete: see "Conversational reply" below
 
 Urgency guidance (use clinical judgment, err toward caution — this is a
@@ -412,11 +420,12 @@ EscalationCallback = Callable[[IntakeResult], Awaitable[None]]
 class PatientInfo(BaseModel):
     """Collected once via the pre-session typed form, before any voice
     starts — deliberately just enough to personalize the spoken reply
-    (name) and give light context (age/occupation). NOT a clinical
+    (name) and give light context (age/gender/occupation). NOT a clinical
     history field; all clinical content still comes through voice only."""
 
     name: str = ""
     age: str = ""
+    gender: str = ""
     occupation: str = ""
 
 
@@ -645,6 +654,7 @@ class LLMPipeline:
         context_lines = [
             f"Patient name: {info.name or '(not given)'}",
             f"Patient age: {info.age or '(not given)'}",
+            f"Patient gender: {info.gender or '(not given)'}",
             f"Patient occupation: {info.occupation or '(not given)'}",
             f"Active conversation language: {'Arabic' if self.current_language == 'ar' else 'English'}",
         ]

@@ -90,6 +90,14 @@
           <input type="text" id="patientAge" name="age" required autocomplete="off" inputmode="numeric" />
         </label>
         <label class="patient-form-field">
+          <span data-i18n="fieldGender">Gender</span>
+          <select id="patientGender" name="gender" required>
+            <option value="" data-i18n="genderSelect">Select…</option>
+            <option value="male" data-i18n="genderMale">Male</option>
+            <option value="female" data-i18n="genderFemale">Female</option>
+          </select>
+        </label>
+        <label class="patient-form-field">
           <span data-i18n="fieldOccupation">Occupation</span>
           <input type="text" id="patientOccupation" name="occupation" autocomplete="organization-title" />
         </label>

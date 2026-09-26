@@ -677,11 +677,12 @@ async def session_endpoint(websocket: WebSocket) -> None:
     # before the mic button even appears, passed here as query params
     # rather than a post-connect message so it's available for the very
     # first Gemini call (personalizing agent_reply's greeting). Deliberately
-    # just these three fields; no clinical history here — that only comes
+    # just these four fields; no clinical history here — that only comes
     # through voice.
     patient_info = PatientInfo(
         name=websocket.query_params.get("name", ""),
         age=websocket.query_params.get("age", ""),
+        gender=websocket.query_params.get("gender", ""),
         occupation=websocket.query_params.get("occupation", ""),
     )
 
