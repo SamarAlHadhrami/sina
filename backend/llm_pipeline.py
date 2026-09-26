@@ -56,6 +56,18 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
+# Optional fourth tier. Reached only if Gemini (both keys) AND Groq are all
+# unavailable — added after a real live outage where Gemini's daily cap and
+# Groq's own rate limit were both hit simultaneously from heavy testing,
+# leaving zero working tiers. OpenRouter's free-tier models add one more
+# independent provider or the chain.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# Confirmed live via GET /models on this account: the once-standard
+# llama-3.3-70b free listing is gone; nemotron-3-super-120b is the largest
+# free model that explicitly lists "structured_outputs" support.
+OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
 # Flash occasionally returns a transient 503 "high demand" ServerError even on
 # a valid request (confirmed empirically); retry briefly before giving up on
 # this tier and moving to the next one (fallback key, then Groq).
@@ -297,7 +309,7 @@ class IntakeResult(BaseModel):
     # normal case, "gemini_fallback" or "groq" only when an earlier tier
     # failed. Surfaced purely for testing/observability (see logging in
     # _extract), not shown to the patient.
-    served_by: Literal["gemini_primary", "gemini_fallback", "groq"] = "gemini_primary"
+    served_by: Literal["gemini_primary", "gemini_fallback", "groq", "openrouter"] = "gemini_primary"
 
 
 SYSTEM_PROMPT = """\
@@ -474,8 +486,10 @@ class LLMPipeline:
         self._groq_client = httpx.AsyncClient(timeout=30.0) if GROQ_API_KEY else None
         # groq's structured-output schema is derived once from IntakeSummary
         # (see _groq_json_schema) rather than per-call, since the schema
-        # itself never changes at runtime.
+        # itself never changes at runtime. Reused as-is for OpenRouter too —
+        # same OpenAI-compatible strict json_schema shape.
         self._groq_schema = _groq_strict_schema(IntakeSummary.model_json_schema()) if GROQ_API_KEY else None
+        self._openrouter_client = httpx.AsyncClient(timeout=30.0) if OPENROUTER_API_KEY else None
         self._on_summary = on_summary
         self._on_escalation = on_escalation
         self._debounce_seconds = debounce_seconds
@@ -710,9 +724,14 @@ class LLMPipeline:
         return IntakeSummary.model_validate_json(content)
 
     async def _try_groq(self, contents: str) -> IntakeSummary:
-        """Tier 3: only reached once both Gemini keys are unavailable. Given
-        the same retry-with-backoff treatment as each Gemini tier, since a
-        transient failure here shouldn't fail the whole request either."""
+        """Tier 3: only reached once both Gemini keys are unavailable.
+
+        Latency fix: a 429 here means Groq's own rate/quota limit is hit —
+        that will not clear in the space of a ~0.6s backoff, so retrying it
+        just burns time before falling through to the next tier for no
+        benefit (confirmed live: a real quota-exhaustion outage kept 429ing
+        on every retry). Only a transient 5xx is worth one quick retry;
+        a 429 fails fast straight to OpenRouter instead."""
         last_error: Optional[Exception] = None
         for attempt in range(MAX_RETRIES):
             try:
@@ -722,12 +741,9 @@ class LLMPipeline:
                 return summary
             except httpx.HTTPStatusError as e:
                 last_error = e
-                # A 429 here is Groq's own rate limit, not a transient
-                # server error — still worth a backoff-and-retry since the
-                # point of this tier is resilience, not giving up early.
-                logger.warning(
-                    "Groq error on attempt %d/%d: %s", attempt + 1, MAX_RETRIES, e
-                )
+                logger.warning("Groq error on attempt %d/%d: %s", attempt + 1, MAX_RETRIES, e)
+                if e.response.status_code == 429:
+                    break  # rate/quota limit — retrying won't help, fail fast
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
             except Exception as e:
@@ -735,6 +751,64 @@ class LLMPipeline:
                 break
         assert last_error is not None
         raise last_error
+
+    async def _call_openrouter(self, contents: str) -> IntakeSummary:
+        response = await self._openrouter_client.post(
+            OPENROUTER_API_URL,
+            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+            json={
+                "model": OPENROUTER_MODEL,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": contents},
+                ],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "IntakeSummary",
+                        "schema": self._groq_schema,
+                        "strict": True,
+                    },
+                },
+            },
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        return IntakeSummary.model_validate_json(content)
+
+    async def _try_openrouter(self, contents: str) -> IntakeSummary:
+        """Tier 4: only reached once Gemini (both keys) AND Groq are all
+        unavailable. Same fast-fail-on-429 treatment as Groq above."""
+        last_error: Optional[Exception] = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                summary = await self._call_openrouter(contents)
+                logger.warning("OpenRouter fallback (tier 4) succeeded.")
+                self._last_served_by = "openrouter"
+                return summary
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                logger.warning("OpenRouter error on attempt %d/%d: %s", attempt + 1, MAX_RETRIES, e)
+                if e.response.status_code == 429:
+                    break
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
+            except Exception as e:
+                last_error = e
+                break
+        assert last_error is not None
+        raise last_error
+
+    async def _try_groq_then_openrouter(self, contents: str) -> IntakeSummary:
+        """Tier 3 then tier 4, chained: if Groq fails too (and OpenRouter is
+        configured), fall through to it before giving up entirely."""
+        try:
+            return await self._try_groq(contents)
+        except Exception as groq_error:
+            if self._openrouter_client:
+                logger.warning("Groq also unavailable — falling through to OpenRouter (tier 4)")
+                return await self._try_openrouter(contents)
+            raise groq_error
 
     async def _extract(self, transcript: str, recheck: bool = False) -> IntakeSummary:
         contents = self._build_contents(transcript, recheck)
@@ -790,7 +864,7 @@ class LLMPipeline:
                     logger.error("Fallback Gemini key ALSO failed: %s", fallback_error)
                     if self._groq_client:
                         logger.warning("Both Gemini keys exhausted — falling through to Groq (tier 3)")
-                        return await self._try_groq(contents)
+                        return await self._try_groq_then_openrouter(contents)
                     raise fallback_error from e
                 raise
 
@@ -800,7 +874,7 @@ class LLMPipeline:
         # "try the next tier before giving up" logic applies here.
         if self._groq_client:
             logger.warning("Primary Gemini key exhausted retries on 503s — falling through to Groq (tier 3)")
-            return await self._try_groq(contents)
+            return await self._try_groq_then_openrouter(contents)
 
         assert last_error is not None
         raise last_error
