@@ -78,8 +78,17 @@ def _is_quota_error(e: genai_errors.ClientError) -> bool:
 # the minimum spacing enforced between Gemini calls: turns that complete
 # within the window are batched and summarized together the next time the
 # window opens, rather than firing one request per turn.
-# 5/min = 12s minimum spacing; 13s adds a small safety margin.
-DEBOUNCE_SECONDS = 13.0
+#
+# Demo-speed tradeoff: 13s (5/min limit's 12s minimum + margin) made the
+# SECOND reply in a conversation (right after the first, immediate one)
+# feel unresponsive — exactly the "after I say the medicines" complaint,
+# since that turn is the one most likely to land inside this window.
+# Shortened to 5s for the demo: this will hit Gemini's rate limit sooner in
+# a fast back-to-back conversation, but that's fine now — a 429 falls
+# through to Groq immediately (fast, no wasted retry) rather than stalling.
+# Bump this back toward 12-13s post-demo if sustained conversations should
+# stay on Gemini rather than shifting load to Groq.
+DEBOUNCE_SECONDS = 5.0
 
 Urgency = Literal["low", "medium", "high"]
 
@@ -596,13 +605,17 @@ class LLMPipeline:
         start = asyncio.get_event_loop().time()
         summary = await self._extract(transcript)
 
-        # Gemini flagged a critical field as uncertain — give it exactly one
-        # more look before accepting "needs human review" as final. Bounded
-        # to one extra call (not a loop) since each retry here is a real,
-        # scarce Gemini request, not a free operation.
-        if summary.needs_human_review:
-            logger.info("needs_human_review on first pass (%s) — re-checking once", summary.review_reason)
-            summary = await self._extract(transcript, recheck=True)
+        # Demo-speed tradeoff: the uncertain-field recheck (one extra full
+        # API call whenever needs_human_review is true — medication names
+        # are exactly the kind of thing that trips this) was doubling
+        # latency on precisely the turn patients noticed most. Disabled for
+        # now to keep the demo snappy; the needs_human_review flag/reason
+        # from the FIRST pass is still trusted and shown as-is instead of
+        # being double-checked. Re-enable by uncommenting below if accuracy
+        # matters more than speed again post-demo.
+        # if summary.needs_human_review:
+        #     logger.info("needs_human_review on first pass (%s) — re-checking once", summary.review_reason)
+        #     summary = await self._extract(transcript, recheck=True)
 
         served_by = self._last_served_by
         elapsed_ms = (asyncio.get_event_loop().time() - start) * 1000
