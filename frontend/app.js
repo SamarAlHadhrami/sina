@@ -91,6 +91,14 @@
       urgencyLow: "low",
       urgencyMedium: "medium",
       urgencyHigh: "high",
+      confidenceNo: "No",
+      languageMismatchPrompt: "This looks like it may have come out in the wrong language.",
+      correctionPlaceholder: "Type what was actually said…",
+      correctionSave: "Save correction",
+      correctionRetry: "Discard — I'll repeat it",
+      startNewSession: "Start New Session",
+      statusSessionComplete: "Session complete",
+      statusSessionEscalated: "Session complete — escalated to interpreter",
     },
     ar: {
       pageTitle: "سينا — الفحص السريري الأولي",
@@ -159,6 +167,14 @@
       urgencyLow: "منخفضة",
       urgencyMedium: "متوسطة",
       urgencyHigh: "عالية",
+      confidenceNo: "لا",
+      languageMismatchPrompt: "يبدو أن هذا ظهر باللغة الخاطئة.",
+      correctionPlaceholder: "اكتب ما قيل فعليًا…",
+      correctionSave: "حفظ التصحيح",
+      correctionRetry: "تجاهل — سأعيد قولها",
+      startNewSession: "بدء جلسة جديدة",
+      statusSessionComplete: "انتهت الجلسة",
+      statusSessionEscalated: "انتهت الجلسة — تم التصعيد إلى مترجم",
     },
   };
 
@@ -180,6 +196,7 @@
     micPanel: document.getElementById("micPanel"),
     micButton: document.getElementById("micButton"),
     micHint: document.getElementById("micHint"),
+    startNewSessionButton: document.getElementById("startNewSessionButton"),
     langToggle: document.getElementById("langToggle"),
     status: document.getElementById("status"),
     latencyStat: document.getElementById("latencyStat"),
@@ -333,28 +350,120 @@
     el.micHint.textContent = pressed ? t("micHintListening") : t("micHintIdle");
   }
 
-  function setConfidencePrompt(wrapperEl, lowConfidence) {
+  // Sends the patient's resolution of a held-back turn (turn-confirmation /
+  // language-leak fix) to the
+  // server — confirm_turn / discard_turn need only the turn_order; the
+  // server matches it against _pending_turns and either feeds the
+  // original text to the LLM pipeline (confirm) or drops it (discard).
+  function sendPendingTurnAction(type, turnOrder) {
+    if (ws && ws.readyState === WebSocket.OPEN && turnOrder !== undefined && turnOrder !== null) {
+      ws.send(JSON.stringify({ type, turn_order: turnOrder }));
+    }
+  }
+
+  // Replaces the Yes/No prompt with an editable correction field (turn-confirmation fix),
+  // reusing the same tap-to-fix shape as the critical-fields section.
+  // "Save correction" sends the EDITED text as correct_turn — the original
+  // disputed recognition never reaches Gemini, only what the patient
+  // confirms is actually correct. "Discard" sends discard_turn instead —
+  // the turn is dropped outright, never becomes clinical content, and the
+  // patient is expected to just repeat themselves into the still-open mic.
+  function showCorrectionUI(wrapperEl, prompt, turnOrder, currentText) {
+    prompt.innerHTML = "";
+
+    const input = document.createElement("textarea");
+    input.className = "confidence-correction-input";
+    input.value = currentText || "";
+    input.placeholder = t("correctionPlaceholder");
+
+    const actions = document.createElement("div");
+    actions.className = "confidence-actions";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "confidence-dismiss";
+    saveBtn.textContent = t("correctionSave");
+    saveBtn.dataset.i18n = "correctionSave";
+    saveBtn.addEventListener("click", () => {
+      const corrected = input.value.trim();
+      if (!corrected) return;
+      if (ws && ws.readyState === WebSocket.OPEN && turnOrder !== undefined && turnOrder !== null) {
+        ws.send(JSON.stringify({ type: "correct_turn", turn_order: turnOrder, text: corrected }));
+      }
+      const lineEl = wrapperEl.querySelector(".transcript-line");
+      if (lineEl) lineEl.textContent = corrected;
+      wrapperEl.classList.remove("transcript-item-disputed");
+      wrapperEl.classList.add("transcript-item-corrected");
+      prompt.hidden = true;
+    });
+
+    const retryBtn = document.createElement("button");
+    retryBtn.type = "button";
+    retryBtn.className = "confidence-no";
+    retryBtn.textContent = t("correctionRetry");
+    retryBtn.dataset.i18n = "correctionRetry";
+    retryBtn.addEventListener("click", () => {
+      sendPendingTurnAction("discard_turn", turnOrder);
+      wrapperEl.classList.add("transcript-item-discarded");
+      prompt.hidden = true;
+    });
+
+    actions.appendChild(saveBtn);
+    actions.appendChild(retryBtn);
+    prompt.appendChild(input);
+    prompt.appendChild(actions);
+  }
+
+  // needsConfirmation = low_confidence OR language_mismatch (see
+  // server.py's _on_stt_turn) — either way, this turn is being held back
+  // server-side until the patient resolves it here (turn-confirmation / language-leak
+  // fix): Yes accepts
+  // it as-is, No opens the correction UI above. languageMismatch only
+  // changes which prompt label is shown (the language-leak safeguard's honest framing: this
+  // looks like it may have leaked into the wrong language, not just "did I
+  // mishear you").
+  function setConfidencePrompt(wrapperEl, needsConfirmation, turnOrder, currentText, languageMismatch) {
     let prompt = wrapperEl.querySelector(".confidence-prompt");
-    if (!lowConfidence) {
+    if (!needsConfirmation) {
       if (prompt) prompt.hidden = true;
       return;
     }
     if (!prompt) {
       prompt = document.createElement("div");
       prompt.className = "confidence-prompt";
+
       const label = document.createElement("span");
-      label.textContent = t("confidencePrompt");
-      label.dataset.i18n = "confidencePrompt";
-      const dismiss = document.createElement("button");
-      dismiss.type = "button";
-      dismiss.className = "confidence-dismiss";
-      dismiss.textContent = t("confidenceDismiss");
-      dismiss.dataset.i18n = "confidenceDismiss";
-      dismiss.addEventListener("click", () => {
+      const labelKey = languageMismatch ? "languageMismatchPrompt" : "confidencePrompt";
+      label.textContent = t(labelKey);
+      label.dataset.i18n = labelKey;
+
+      const actions = document.createElement("div");
+      actions.className = "confidence-actions";
+
+      const yesBtn = document.createElement("button");
+      yesBtn.type = "button";
+      yesBtn.className = "confidence-dismiss";
+      yesBtn.textContent = t("confidenceDismiss");
+      yesBtn.dataset.i18n = "confidenceDismiss";
+      yesBtn.addEventListener("click", () => {
+        sendPendingTurnAction("confirm_turn", turnOrder);
         prompt.hidden = true;
+        wrapperEl.classList.add("transcript-item-confirmed");
       });
+
+      const noBtn = document.createElement("button");
+      noBtn.type = "button";
+      noBtn.className = "confidence-no";
+      noBtn.textContent = t("confidenceNo");
+      noBtn.dataset.i18n = "confidenceNo";
+      noBtn.addEventListener("click", () => {
+        showCorrectionUI(wrapperEl, prompt, turnOrder, currentText);
+      });
+
+      actions.appendChild(yesBtn);
+      actions.appendChild(noBtn);
       prompt.appendChild(label);
-      prompt.appendChild(dismiss);
+      prompt.appendChild(actions);
       wrapperEl.appendChild(prompt);
     }
     prompt.hidden = false;
@@ -375,7 +484,7 @@
     badge.className = "lang-badge lang-badge-" + languageTag.toLowerCase().replace("+", "-");
   }
 
-  function appendTranscriptLine(text, turnOrder, lowConfidence, languageTag) {
+  function appendTranscriptLine(text, turnOrder, needsConfirmation, languageTag, languageMismatch) {
     if (!text) return;
     el.transcriptPlaceholder.hidden = true;
 
@@ -395,7 +504,7 @@
 
     if (existing) {
       existing.querySelector(".transcript-line").textContent = text;
-      setConfidencePrompt(existing, lowConfidence);
+      setConfidencePrompt(existing, needsConfirmation, turnOrder, text, languageMismatch);
       setLanguageBadge(existing, languageTag);
       existing.scrollIntoView({ behavior: "smooth", block: "end" });
       return;
@@ -415,7 +524,7 @@
 
     el.transcriptLog.appendChild(wrapper);
     setLanguageBadge(wrapper, languageTag);
-    setConfidencePrompt(wrapper, lowConfidence);
+    setConfidencePrompt(wrapper, needsConfirmation, turnOrder, text, languageMismatch);
     // The log grows with the page now (no nested scroll container), so
     // bring the new bubble into view the same way a chat app would.
     wrapper.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -747,7 +856,13 @@
     switch (msg.type) {
       case "transcript":
         if (msg.is_final) {
-          appendTranscriptLine(msg.text, msg.turn_order, msg.low_confidence, msg.language_tag);
+          appendTranscriptLine(
+            msg.text,
+            msg.turn_order,
+            msg.needs_confirmation,
+            msg.language_tag,
+            msg.language_mismatch
+          );
           setPartial("");
         } else {
           setPartial(msg.text);
@@ -786,9 +901,23 @@
 
       case "session_ended":
         // Server has finished flushing the final summary attempt (including
-        // any Gemini retries) — now it's safe to close the socket.
+        // any Gemini retries) — now it's safe to close the socket. This is
+        // the client-initiated "I tapped stop" ack; session_complete below
+        // is the separate, server-initiated "the conversation itself has
+        // concluded" signal (escalation-continuation / session-lock fix) —
+        // the two can arrive independently of each other.
         if (ws) ws.close();
         setStatus("", "statusIdle");
+        break;
+
+      case "session_complete":
+        // Session-lock fix: the server has just spoken its FINAL closing
+        // statement (normal or the fixed escalation notice) and will not
+        // listen or speak again on this connection. Lock the mic here
+        // rather than waiting for the patient to tap stop — the server
+        // decided the conversation is over, possibly while the mic was
+        // still actively recording.
+        lockSessionComplete(msg.escalated);
         break;
 
       case "error":
@@ -912,7 +1041,11 @@
     setStatus("listening", "statusListening");
   }
 
-  async function stopRecording() {
+  // Tears down local mic capture only — no WebSocket messages, no status
+  // changes. Shared by stopRecording() (patient-initiated: tapped the mic)
+  // and lockSessionComplete() (server-initiated: the conversation itself
+  // concluded, possibly while the mic was still actively recording).
+  async function teardownAudio() {
     isRecording = false;
     setMicPressed(false);
 
@@ -933,6 +1066,10 @@
       await audioContext.close();
       audioContext = null;
     }
+  }
+
+  async function stopRecording() {
+    await teardownAudio();
 
     setStatus("processing", "statusFinishing");
     setPartial("");
@@ -954,7 +1091,70 @@
     }
   }
 
+  // sessionLocked mirrors the server's own _session_locked (see server.py):
+  // once true, the mic is disabled and only "Start New Session" can bring
+  // the app back to a usable state — pressing the (disabled) mic must
+  // never silently start a new "Hello, how can I help" conversation on the
+  // same connection.
+  let sessionLocked = false;
+
+  function lockSessionComplete(escalated) {
+    sessionLocked = true;
+    // The server already decided the conversation is over and will not
+    // send another "session_ended" ack for an "end" we never sent — tear
+    // down local capture directly rather than routing through
+    // stopRecording(), which would wait on an ack that isn't coming.
+    if (isRecording) teardownAudio();
+    el.micButton.disabled = true;
+    el.micButton.setAttribute("aria-disabled", "true");
+    el.startNewSessionButton.hidden = false;
+    setStatus("", escalated ? "statusSessionEscalated" : "statusSessionComplete");
+  }
+
+  function resetSessionUI() {
+    sessionLocked = false;
+    if (ws) {
+      try {
+        ws.close();
+      } catch {
+        // already closed/closing — nothing to do
+      }
+      ws = null;
+    }
+
+    el.micButton.disabled = false;
+    el.micButton.removeAttribute("aria-disabled");
+    el.startNewSessionButton.hidden = true;
+
+    // Clear the transcript log back to its initial placeholder state
+    // without destroying the placeholder node itself (it's referenced
+    // elsewhere by id, so innerHTML="" would leave that reference
+    // pointing at a detached element).
+    Array.from(el.transcriptLog.children).forEach((child) => {
+      if (child !== el.transcriptPlaceholder) child.remove();
+    });
+    el.transcriptPlaceholder.hidden = false;
+    setPartial("");
+
+    el.summaryPanel.hidden = true;
+    el.escalationBanner.hidden = true;
+    el.reviewBanner.hidden = true;
+    el.latencyStat.hidden = true;
+    currentUrgency = null;
+    escalationState = null;
+
+    patientInfo = { name: "", age: "", occupation: "" };
+    el.patientForm.reset();
+    el.micPanel.hidden = true;
+    el.patientFormPanel.hidden = false;
+
+    setStatus("", "statusIdle");
+  }
+
+  el.startNewSessionButton.addEventListener("click", resetSessionUI);
+
   el.micButton.addEventListener("click", () => {
+    if (sessionLocked) return;
     if (isRecording) {
       stopRecording();
     } else {

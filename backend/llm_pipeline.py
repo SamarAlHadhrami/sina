@@ -249,9 +249,22 @@ class IntakeSummary(BaseModel):
         "prose) in the SAME language as the conversation — never mixed. This is what "
         "gets read aloud via TTS, replacing a generic acknowledgment. See the system "
         "prompt's conversational-flow rules for what it should say at each stage. "
-        "If a red-flag escalation applies, this is still generated normally but the "
-        "caller mutes it in favor of the escalation notice — do not try to write an "
-        "'emergency' reply yourself, just answer the conversational turn naturally.",
+        "Generated the same way regardless of urgency — do not try to write an "
+        "'emergency' reply yourself even if you judge urgency to be high; the caller "
+        "handles the actual escalation notice separately and only once "
+        "conversation_complete below is true, not by altering this field.",
+    )
+    conversation_complete: bool = Field(
+        default=False,
+        description="True ONLY when agent_reply above is the natural CLOSING "
+        "statement — symptoms, medications, and allergies have all been covered "
+        "(each either stated or explicitly ruled out) — rather than a greeting or "
+        "a follow-up question. False for every other agent_reply, including while "
+        "optionally still asking about duration/recurrence/severity. Judge this "
+        "the SAME way regardless of urgency: even a high-urgency conversation "
+        "keeps this false until intake is reasonably complete — you are not "
+        "deciding whether/how escalation is announced, only whether THIS reply is "
+        "your natural closing line versus still an open question.",
     )
 
 
@@ -312,7 +325,7 @@ just the newest line):
   review if a medication name was unintelligible. Do not guess a low-risk
   classification to paper over a gap; say so instead.
 - summary_note: a short clinician-facing summary
-- agent_reply: see "Conversational reply" below
+- agent_reply + conversation_complete: see "Conversational reply" below
 
 Urgency guidance (use clinical judgment, err toward caution — this is a
 suggestion; a separate deterministic check on the raw transcript can only
@@ -325,11 +338,16 @@ raise it further, never lower it):
 - medium: symptoms that need timely but not emergency care.
 - low: mild or chronic symptoms, routine follow-up, medication refill requests.
 
-Conversational reply (agent_reply field):
+Conversational reply (agent_reply + conversation_complete fields):
 You will be given the patient's name, the active conversation language, and
 what you said last turn (if anything) as extra context alongside the
 transcript. Write agent_reply according to where the conversation actually
-is right now:
+is right now. This applies REGARDLESS of urgency — keep asking natural
+follow-up questions and behave exactly as you would in a calm case, even if
+you judge urgency to be high; a separate mechanism outside your control
+decides how/when to actually announce escalation to a human interpreter,
+and it does that by reading conversation_complete below, not by editing
+what you write here:
 - If the transcript so far is just a greeting ("Hello Sina" / "مرحبا سينا"
   or similar) with no symptom information yet: greet back using the
   patient's name and invite them to describe what's happening. Example
@@ -352,19 +370,23 @@ is right now:
 - Once symptoms, medications, and allergies have all been covered (each
   either stated or the patient has said they don't apply): give a natural
   closing statement, not another question — e.g. thank them and say a
-  clinician will follow up. Duration/onset, recurrence, and severity/
-  pattern are a bonus if you already gathered them in passing, but do NOT
-  delay closing to chase them once the three required areas are covered.
+  clinician will follow up — AND set conversation_complete to true. Duration/
+  onset, recurrence, and severity/pattern are a bonus if you already
+  gathered them in passing, but do NOT delay closing (or conversation_complete)
+  to chase them once the three required areas are covered. conversation_complete
+  is false for every other agent_reply (greeting, any follow-up question).
 - ALWAYS in the SAME language as the transcript (the active language given
   to you) — never switch languages, never mix.
 - Do NOT repeat what you already said last turn (given to you as context).
   If nothing has changed since then, keep it brief and move the
   conversation forward rather than restating the same question.
 - Do NOT write an "emergency" or alarmed reply yourself, even if you judge
-  urgency to be high — a separate, deterministic mechanism handles the
-  actual escalation notice, and your agent_reply may be muted in favor of
-  it. Just answer the conversational turn naturally, as if you didn't know
-  what happens next.
+  urgency to be high. Just answer the conversational turn naturally — keep
+  asking your normal remaining follow-up questions — as if you didn't know
+  what happens next. The caller decides separately, once
+  conversation_complete is true, whether to actually speak your closing
+  line or a fixed interpreter-connection notice instead; that decision and
+  its exact wording are not yours to make.
 - Keep it short — this is spoken aloud, not read.
 
 Respond ONLY with the structured JSON described by the schema.

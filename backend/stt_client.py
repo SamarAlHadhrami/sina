@@ -79,10 +79,35 @@ DOMAIN = "medical"
 # error and left in per AssemblyAI's documented parameter list for Pro
 # streaming, but real-world accuracy impact wasn't independently measurable
 # this session.
-DOMAIN_PROMPT = (
-    "Clinical patient intake conversation, bilingual Arabic and English, "
-    "includes medication names, symptoms, and allergy information."
-)
+#
+# Re-investigated as part of the Arabic-mode English-leakage report: this
+# prompt used to read "bilingual Arabic and English" for EVERY session,
+# even one pinned single-language via language_codes=["ar"]. That's a
+# plausible contributing nudge toward code-switching output — describing
+# the session as bilingual right next to the language pin arguably works
+# against it — though it could not be confirmed as the actual root cause
+# via a controlled A/B test this session (see README Known Limitations for
+# the honest, non-overclaiming writeup, including AssemblyAI's own
+# language_codes being a bias rather than a hard filter regardless of this
+# prompt). Now built per-session language instead of a single bilingual
+# constant, so single-language sessions are never told they're bilingual.
+def _domain_prompt_for(language_codes: list[str]) -> str:
+    if language_codes == ["en"]:
+        return (
+            "Clinical patient intake conversation in English. Includes "
+            "medication names, symptoms, and allergy information."
+        )
+    # Default/Arabic session. Deliberately NOT described as "bilingual" —
+    # see note above. Still explicitly allows English medication brand
+    # names, since patients realistically do say those in English even
+    # while speaking Arabic (e.g. "Panadol", "aspirin") — that's expected,
+    # legitimate content, not the leakage this investigation is about.
+    return (
+        "Clinical patient intake conversation in Arabic. The patient may "
+        "say some medication brand names in English (e.g. Panadol, "
+        "aspirin) even while speaking Arabic. Includes symptoms and "
+        "allergy information."
+    )
 # Compact and locally-relevant on purpose, not exhaustive — an over-broad
 # keyterms list can bias the model toward hallucinating listed terms that
 # weren't actually said, which would be worse than not boosting them at all.
@@ -141,7 +166,7 @@ class STTClient:
             ("domain", DOMAIN),
             ("min_turn_silence", MIN_TURN_SILENCE_MS),
             ("max_turn_silence", MAX_TURN_SILENCE_MS),
-            ("prompt", DOMAIN_PROMPT),
+            ("prompt", _domain_prompt_for(self._language_codes)),
             ("keyterms_prompt", json.dumps(KEYTERMS)),
         ]
         # language_codes is a repeated query param, one code per occurrence

@@ -1,12 +1,16 @@
 # Sina — Demo Script
 
-Target: **under 4 minutes** total video. Centerpiece: Sina now runs a real
+Target: **~4:15** total video. Centerpiece: Sina now runs a real
 back-and-forth conversation (greeting → follow-up questions → closing), not
 a silent transcribe-and-summarize loop, driven by ONE Gemini call per turn
 batch (no doubled API usage). Case A shows the conversational loop plus
-uncertainty-handling and an explicit language switch; Case B shows the
-deterministic safety override with a calm tone. Arabic lines are given in
-Arabic script with a transliteration + translation underneath.
+uncertainty-handling, an explicit language switch, and the session locking
+on close; Case B shows the deterministic safety override with a calm
+tone — corrected so the escalation banner fires immediately but the
+conversation keeps gathering the rest of the intake instead of ending on
+the spot, closing on the fixed interpreter notice only once that's done.
+Arabic lines are given in Arabic script with a transliteration + translation
+underneath.
 
 Sessions are single-language (Arabic-only or English-only, picked via the
 toggle) — a deliberate accuracy decision. The cases below switch languages
@@ -25,10 +29,10 @@ the first-load popup and on every later switch.
 |---|---|---|
 | 1. Problem intro | 0:00–0:30 (30s) | The gap Sina fills |
 | 2. Language popup + pre-session form | 0:30–0:50 (20s) | Full-app language choice, then name/age/occupation |
-| 3. Live demo — Case A (conversational loop) | 0:50–2:30 (100s) | Greeting → follow-ups → uncertainty → language switch → closing |
-| 4. Live demo — Case B (deterministic escalation) | 2:30–3:15 (45s) | Calm-toned chest pain still escalates |
-| 5. Tech explanation | 3:15–3:45 (30s) | Conversational layer, deterministic safety, Medical Mode |
-| 6. Business case | 3:45–4:00 (15s) | Why this matters, who it's for |
+| 3. Live demo — Case A (conversational loop) | 0:50–2:30 (100s) | Greeting → follow-ups → uncertainty → language switch → closing → session lock |
+| 4. Live demo — Case B (deterministic escalation) | 2:30–3:30 (60s) | Calm-toned chest pain: banner fires immediately, conversation continues, closes on the fixed interpreter notice |
+| 5. Tech explanation | 3:30–4:00 (30s) | Conversational layer, deterministic safety, Medical Mode |
+| 6. Business case | 4:00–4:15 (15s) | Why this matters, who it's for |
 
 Keep segments 3 and 4 tight — let the app's own UI/audio do the work instead
 of narrating over them.
@@ -129,11 +133,24 @@ and allergies are all covered, Sina's next reply is a **closing statement**,
 not another question — e.g. "Thank you, Sara — a clinician will follow up
 shortly" — in English, matching the now-active language.
 
-**Action:** Tap the mic button to stop.
+**Expected on-screen behavior (session lock):** Right after that closing
+line is spoken, the mic button visibly disables itself and a **"Start New
+Session"** button appears — this happens automatically, without tapping
+stop. The conversation has concluded on the server's own initiative; it
+does not silently wait for another turn or restart the greeting if tapped
+again. Show tapping the (disabled) mic does nothing, then tap **Start New
+Session** to reset back to the pre-session form for the next case.
 
 ---
 
-## 4. Live demo — Case B: deterministic escalation (2:30–3:15)
+## 4. Live demo — Case B: deterministic escalation, without cutting the
+   conversation short (2:30–3:30)
+
+**Corrected flow — this used to end the session immediately on the red-flag
+match, before medications/allergies were ever gathered. Fixed: the banner
+still fires immediately, but Sina keeps asking its normal remaining
+questions, and only announces the interpreter handoff as its actual final
+line once intake is reasonably complete.**
 
 **Action:** New session. Toggle set to **English**. Tap the mic button.
 
@@ -141,44 +158,64 @@ shortly" — in English, matching the now-active language.
 
 "I have some chest pain today, it's not too bad."
 
-**Expected on-screen behavior:**
+**Expected on-screen behavior — banner fires immediately, conversation
+continues:**
 - The deterministic keyword check matches "chest pain" directly against
   the raw transcript — regardless of calm delivery, urgency is forced to
-  **high** and escalation fires immediately:
-  - **Escalation banner**: animated "Connecting you with a human
-    interpreter" → "Interpreter connected."
-  - Sina speaks the escalation notice via TTS — **not** a routine
-    follow-up question, even though one might otherwise be due. The
-    escalation notice always takes priority over the conversational reply.
-  - Summary card shows urgency **HIGH**, red flag *"deterministic match:
-    chest pain"* — visibly distinct from Gemini's own judgment calls.
-- Narrate: "The tone was calm the whole time. This didn't escalate because
-  Gemini decided it sounded serious — a fixed, reviewed keyword list
-  matched, and it cannot be talked out of it, and it takes priority over
-  Sina's own conversational reply."
+  **high** and the **escalation banner** appears right away: "Connecting
+  you with a human interpreter" → "Interpreter connected." This is a
+  one-time visual indicator, fired once for the whole session.
+- Summary card shows urgency **HIGH**, red flag *"deterministic match:
+  chest pain"* — visibly distinct from Gemini's own judgment calls.
+- Sina does **NOT** stop talking or end the session here. It asks its next
+  natural follow-up exactly as it would in a calm case — e.g. "Are you
+  currently taking any medications?" — spoken normally.
+- Narrate: "The banner told us this is urgent the moment it was said. But
+  Sina still needs the rest of the intake — it keeps asking, calmly, the
+  same way it would for anything else."
+
+**Speak:** "I'm not taking anything right now." → Sina asks about allergies.
+
+**Speak:** "No allergies that I know of."
+
+**Expected on-screen behavior — the actual closing line:**
+- Once symptoms, medications, and allergies are all covered, Sina's final
+  statement is the fixed, non-negotiable interpreter-connection notice —
+  "I'm connecting you with a human interpreter now. Please hold on for a
+  moment." — **not** whatever closing line Gemini itself might have
+  drafted. That exact wording never comes from the LLM.
+- The mic disables itself automatically and **"Start New Session"**
+  appears, exactly like the normal-closing case in Case A — escalating
+  sessions lock the same way, they just close with a different line.
+- Narrate: "The tone was calm the whole time. This escalated because a
+  fixed, reviewed keyword list matched — not because Gemini decided it
+  sounded serious — and Sina still gathered the rest of the intake before
+  handing off, instead of leaving a human interpreter with nothing but
+  'chest pain' and silence."
 
 **Action:** Tap the mic button to stop.
 
 ---
 
-## 5. Tech explanation (3:15–3:45)
+## 5. Tech explanation (3:30–4:00)
 
 > "Under the hood: one Gemini call per turn batch now returns both the
 > structured clinical extraction AND Sina's spoken reply together — no
 > doubled API usage for the conversation. That reply greets the patient
 > by name, asks about whatever's still missing one question at a time —
 > medications, allergies, duration, recurrence, severity — and closes
-> naturally once symptoms, medications, and allergies are covered. But it
-> never gets the final word on danger: a small, reviewed keyword list runs
-> directly against the raw transcript and can force an escalation the
-> model didn't make — never the reverse — and always takes priority over a
-> routine reply. And the language you pick up front — at that first popup,
-> or any later switch — drives the whole interface, not just what Sina
-> says back."
+> naturally once symptoms, medications, and allergies are covered. A small,
+> reviewed keyword list runs directly against the raw transcript and can
+> force an escalation the model didn't make — never the reverse — but it no
+> longer cuts the conversation short: Sina keeps gathering the rest of the
+> intake, and only announces the interpreter handoff, in fixed wording, as
+> its actual final line, once intake is reasonably complete. And the
+> language you pick up front — at that first popup, or any later switch —
+> drives the whole interface, not just what Sina says back."
 
 ---
 
-## 6. Business case (3:45–4:00)
+## 6. Business case (4:00–4:15)
 
 > "For clinics serving Arabic-speaking patients, Sina runs the actual
 > intake conversation — not just a transcript — while a safety net
@@ -206,6 +243,16 @@ End on the Sina UI, idle, ready for the next patient.
   limit.
 - The language popup blocks the rest of the page until a choice is made —
   don't forget it's there when starting the take from a fresh page load.
+- Case B now takes noticeably longer than before (banner fires immediately,
+  but the conversation continues through medications and allergies before
+  closing) — budget for it; don't cut speaking early expecting an instant
+  end-of-session the way it used to.
+- Both cases now end the same way: mic disables itself and "Start New
+  Session" appears automatically, without tapping stop. If recording
+  back-to-back takes, tap it between cases rather than reloading the page.
+- A genuinely low-confidence turn now shows **both** "Yes, that's right"
+  and "No" — if "No" comes up naturally on a take, showing the correction
+  field briefly is a nice bonus beat, but isn't required for either case.
 - The language switch reconnects AssemblyAI in under a second in testing,
   but allow a beat of silence after tapping the toggle before speaking the
   next line.

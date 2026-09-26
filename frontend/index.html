@@ -114,6 +114,20 @@
         <span class="mic-icon" aria-hidden="true"></span>
       </button>
       <p class="mic-hint" id="micHint" data-i18n="micHintIdle">Tap to begin speaking with Sina</p>
+
+      <!-- Session-lock fix: shown only once a session has concluded (session_complete
+           from the server) — the mic above is disabled at that point and
+           never silently restarts a new "Hello, how can I help" greeting
+           on the same connection. This opens a genuinely fresh session. -->
+      <button
+        type="button"
+        id="startNewSessionButton"
+        class="start-new-session-button"
+        hidden
+        data-i18n="startNewSession"
+      >
+        Start New Session
+      </button>
     </section>
 
     <section class="panel transcript-panel">

@@ -109,8 +109,9 @@ it does not get the final word on whether something is dangerous.
    never a checklist, never something the patient already stated. Closing
    only waits on symptoms/medications/allergies; it won't stall chasing
    recurrence or severity once those three are covered. `agent_reply` is
-   muted on an escalating turn — the escalation
-   notice always takes priority, never a routine question. A second Gemini
+   generated and spoken the same way regardless of urgency — see item 11
+   below for how escalation now interacts with closing instead of muting
+   this. A second Gemini
    API key can be set as `GEMINI_API_KEY_FALLBACK` in `.env`; on a 429
    (either the per-minute or daily cap), one attempt (with its own 503
    retry-with-backoff) is made with it before giving up, logged clearly
@@ -145,6 +146,98 @@ it does not get the final word on whether something is dangerous.
     translation on selection, re-translation on both a manual toggle
     change and a simulated voice-triggered switch, and non-empty
     translations for every `[data-i18n]` node in both languages.
+11. **Escalation no longer ends the conversation early.** Previously, a
+    deterministic red-flag match muted `agent_reply` for the rest of the
+    session and re-spoke the interpreter notice on every subsequent
+    (debounced) summary — from the patient's perspective, Sina just stopped
+    talking right after the flag, before medications/allergies/duration
+    were ever gathered. Now: the escalation **banner** still fires
+    immediately and exactly once (`SinaSession._escalation_banner_shown`),
+    but `agent_reply` keeps being generated and spoken normally —
+    `llm_pipeline.py`'s prompt now explicitly tells Gemini to behave
+    identically regardless of urgency. Only once Gemini's own new
+    `conversation_complete` field says intake is reasonably done (same
+    criteria as a normal closing: symptoms/medications/allergies covered)
+    does the session speak its actual FINAL line and lock — and if
+    escalating, that line is the fixed `ESCALATION_MESSAGE_EN`/`_AR`, never
+    Gemini's own closing wording, so safety-critical phrasing never comes
+    from the LLM. Verified live (in-process, real Gemini/Groq calls, no
+    mocking): a chest-pain turn fires the banner once, the conversation
+    then asks about medications and allergies exactly as a calm case would
+    (confirmed `agent_reply` non-empty on every intermediate summary), and
+    only the final summary — once both are covered — carries
+    `conversation_complete=true` and triggers the fixed interpreter notice
+    plus session lock.
+12. **Session lock — no more silent restarts.** Once a session concludes
+    (`conversation_complete=true`, escalating or not), the server sets
+    `_session_locked`, closes its own STT connection, and sends
+    `{"type":"session_complete","escalated":bool}`; any further audio or
+    client message on that connection is a no-op (`_on_stt_turn` and
+    `handle_client_message` both check the flag). The frontend disables the
+    mic on this signal — even if it arrives mid-recording, before the
+    patient tapped stop — and shows a new **"Start New Session"** button
+    instead. Pressing the disabled mic does nothing; a fresh conversation
+    is a genuinely new WebSocket connection (a new `SinaSession`, for free,
+    from FastAPI's own per-connection handling), not a reset of server
+    state. Verified for both the escalating and normal-closing cases
+    (in-process, real Gemini/Groq) and headlessly (jsdom) for the frontend
+    lock/unlock/reset behavior.
+13. **Turn-level Yes/No confirmation, not just Yes.** The existing "Did I
+    hear that right?" prompt (shown only on genuinely low-confidence turns
+    — unchanged) now has a **No** button alongside "Yes, that's right".
+    Under the hood, any turn needing confirmation is held server-side
+    (`SinaSession._pending_turns`, keyed by turn_order) and is **not** fed
+    to the LLM pipeline until resolved: "Yes" sends `confirm_turn` (feeds
+    the original text), "No" opens an editable correction field — reusing
+    the critical-fields tap-to-fix pattern — whose "Save correction" sends
+    `correct_turn` with the edited text (the disputed original never
+    reaches Gemini), or "Discard" sends `discard_turn` (dropped outright).
+    Verified in-process with a real `SinaSession`: a garbled low-confidence
+    turn is held back (`session.llm._final_lines` stays empty), and after
+    `correct_turn`, the LLM pipeline's transcript contains exactly the
+    corrected text, never the original.
+14. **Arabic-mode English-leakage re-investigation.** Re-examined per a bug
+    report that Arabic sessions still intermittently transcribed bursts of
+    English despite the existing single-element `language_codes=["ar"]`
+    pin. Findings, stated plainly:
+    - `language_codes` itself was confirmed, by code inspection, to hold
+      identically across every reconnect (language switch, STT hiccup) —
+      `switch_language()` always constructs the new `STTClient` with the
+      same one-element list; there is no drift or reset path.
+    - The `prompt` (domain-context bias) passed to AssemblyAI described
+      **every** session as "bilingual Arabic and English," even a
+      single-language-pinned one — a plausible nudge toward code-switching
+      output. Reworded to be built per-session language instead
+      (`_domain_prompt_for()` in `stt_client.py`), no longer calling a
+      single-language session bilingual, while still explicitly allowing
+      English medication brand names (legitimate content, not leakage).
+      **This could not be confirmed as the root cause via a controlled A/B
+      test** — stated honestly, not overclaimed as a fix.
+    - AssemblyAI's `language_codes` is documented/confirmed as a strong
+      bias, not a hard filter — some leakage may remain a platform
+      characteristic no server-side config can fully eliminate.
+    - **Added regardless as a backstop**: a final Arabic-mode turn with
+      *zero* Arabic characters at all (a whole-turn leak) is flagged
+      `language_mismatch` and routed through the same Yes/No confirmation
+      hold-back as low confidence (item 13) — never silently accepted. A
+      single embedded English word (e.g. a drug brand name) is left alone
+      (tagged `AR+EN`, not a mismatch) since a substring filter would also
+      strip legitimate content.
+    - **Live test result**: an 8-turn, ~32s synthesized Arabic conversation
+      (Azure Omani TTS → real AssemblyAI STT, `language_codes=["ar"]")`
+      produced 0 whole-turn English leaks and 0 `language_mismatch` flags;
+      the one embedded medication-brand mention came back transliterated
+      into Arabic script rather than switching to English. **This is a
+      positive but limited result, not a full resolution**: it's
+      synthesized speech, not organic human speech with real accents/
+      hesitation, and shorter than ideal (AssemblyAI closed the streaming
+      connection once mid-test with an unrelated policy code, requiring a
+      reconnect — language_codes held identically across it). Honest
+      verdict: **partially improved** (prompt no longer describes the
+      session as bilingual; a real backstop now exists for whatever
+      leakage does occur) rather than **fully resolved** — no test run
+      observed leakage, but the sample size and speech source don't
+      support a stronger claim than that.
 
 ## Repo layout
 
@@ -179,12 +272,19 @@ browser mic (Web Audio API)
   → binary WebSocket frames → server.py SinaSession
   → STTClient.send_audio() → AssemblyAI
   → STTClient on_turn callback fires for every Turn (partial + final)
-      → sent to frontend as {"type":"transcript", text, is_final, language_code}
-      → if end_of_turn: LLMPipeline.on_turn() (debounced, see below)
+      → sent to frontend as {"type":"transcript", text, is_final, needs_confirmation, ...}
+      → if needs_confirmation (low_confidence or language_mismatch): HELD
+          until the patient confirms/corrects/discards it (see server.py)
+      → else if end_of_turn: LLMPipeline.on_turn() (debounced, see below)
           → Gemini structured extraction → IntakeResult(summary, escalate_to_interpreter)
           → {"type":"summary", summary:{...}, escalate_to_interpreter} to frontend
-          → if escalate_to_interpreter: {"type":"escalation", red_flags} +
-            TTSClient spoken notice → {"type":"audio", context:"escalation", audio_base64}
+          → if escalate_to_interpreter (first time): {"type":"escalation", red_flags}
+            — a one-time visual banner; the conversation keeps running its
+            normal follow-ups afterward, it does NOT end here
+          → if summary.conversation_complete: speak the closing line (the
+            fixed ESCALATION_MESSAGE if escalating, else Gemini's own
+            agent_reply) → {"type":"audio", ...} → {"type":"session_complete"}
+            → session locked, no further TTS/listening
 ```
 
 Client can also send `{"type":"speak","text":...}` for on-demand TTS, and
@@ -466,6 +566,14 @@ replies `{"type":"session_ended"}` once safe to close the socket).
 
 ## Known limitations (to mention transparently in the demo)
 
+- **Arabic-mode English leakage: partially improved, not fully resolved** —
+  see Safety Architecture item 14 for the full honest writeup. Short
+  version: `language_codes` pinning is a strong bias on AssemblyAI's side,
+  not a hard filter, so some leakage may be a platform characteristic no
+  server-side config fully eliminates; a domain-prompt wording fix and a
+  `language_mismatch` confirmation backstop were both added, and a live
+  synthesized-speech test showed zero leaks, but that's a limited sample,
+  not proof the underlying platform behavior changed.
 - **Gemini has a daily cap, not just per-minute**: `generate_content_free_tier_requests`
   is limited to 20/day for `gemini-3.6-flash` on the free tier, separate from
   the 5/min limit. The uncertain-critical-field recheck (one bounded retry —

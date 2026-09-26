@@ -499,6 +499,38 @@ main {
   animation: pulse-ring 1.6s ease-out infinite;
 }
 
+/* Session-lock fix: once a session has concluded, the mic is disabled
+   rather than silently ready to start a new conversation on the same
+   connection — "Start New Session" (below) is the only way back in. */
+.mic-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  animation: none;
+  box-shadow: none;
+}
+
+.mic-button:disabled:hover {
+  background: var(--brand);
+}
+
+.start-new-session-button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--brand-dark);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 8px 20px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s var(--ease-standard), border-color 0.15s var(--ease-standard);
+}
+
+.start-new-session-button:hover {
+  background: var(--brand-tint);
+  border-color: var(--brand);
+}
+
 .mic-icon {
   width: 26px;
   height: 26px;
@@ -586,12 +618,16 @@ main {
 }
 
 .confidence-prompt {
+  /* Column layout: works for both states this can be in — a one-line
+     label + Yes/No row, or (after tapping "No") a taller correction
+     textarea + Save/Discard row — without restructuring the CSS between
+     the two. */
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   margin-top: 4px;
-  padding: 6px 12px;
+  padding: 8px 12px;
   background: var(--urgency-medium-bg);
   color: var(--urgency-medium-text);
   border-radius: 8px;
@@ -599,7 +635,14 @@ main {
   animation: bubble-in 0.16s var(--ease-out);
 }
 
-.confidence-dismiss {
+.confidence-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.confidence-dismiss,
+.confidence-no {
   flex-shrink: 0;
   border: 1px solid currentColor;
   background: transparent;
@@ -611,8 +654,44 @@ main {
   transition: background 0.15s var(--ease-standard);
 }
 
-.confidence-dismiss:hover {
+.confidence-dismiss:hover,
+.confidence-no:hover {
   background: rgba(0, 0, 0, 0.06);
+}
+
+.confidence-correction-input {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+  min-height: 48px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.confidence-correction-input:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+/* Item 3/4 turn-resolution states, layered on top of .transcript-item —
+   deliberately subtle (this is a record of what happened, not a new alert
+   to notice) except for "discarded," which needs to visibly read as "not
+   included" so the transcript accurately reflects what became clinical
+   content. */
+.transcript-item-corrected .transcript-line {
+  border: 1px solid var(--brand);
+}
+
+.transcript-item-disputed .transcript-line {
+  opacity: 0.85;
+}
+
+.transcript-item-discarded .transcript-line {
+  text-decoration: line-through;
+  opacity: 0.55;
 }
 
 .partial-line {

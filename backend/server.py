@@ -6,21 +6,33 @@ patient session:
 
     browser mic audio  --(binary frames)-->  STTClient (AssemblyAI)
                                                   |
-                                       on completed turn (debounced)
-                                                  v
+                                     on completed turn (debounced)
+                                                  |
+                        low_confidence / language_mismatch? --- yes --> held
+                                                  |                     until patient
+                                                 no                     confirms/corrects/
+                                                  v                     discards it
                                             LLMPipeline (Gemini)
                                                   |
                                      summary ----------- high urgency
                                         |                     |
                                         v                     v
-                                 send JSON summary     send JSON escalation
-                                 to frontend           + spoken TTS notice
-                                                        (English: TTSClient/
-                                                        ElevenLabs. Arabic:
-                                                        AzureTTSClient —
-                                                        ElevenLabs has no
-                                                        free-tier Arabic
-                                                        voice.)
+                             send JSON summary        send JSON escalation
+                             to frontend              banner ONCE (visual
+                                        |              only — conversation
+                                        |              keeps running its
+                                        |              normal follow-ups,
+                                        |              does not end here)
+                                        v
+                        conversation_complete? --- yes --> speak closing line
+                                        |                   (escalating: fixed
+                                       no                   ESCALATION_MESSAGE;
+                                        v                   otherwise: Gemini's
+                              speak agent_reply             own agent_reply)
+                              normally, keep going           --> lock session,
+                              (English: TTSClient/               no more TTS/
+                              ElevenLabs. Arabic:                 listening
+                              AzureTTSClient.)
 
 Protocol (single WebSocket at /ws/session?lang=ar|en — one is required in
 spirit; an omitted/invalid value defaults to "ar" rather than bilingual):
@@ -38,30 +50,60 @@ spirit; an omitted/invalid value defaults to "ar" rather than bilingual):
         keeps running). Also triggered internally by a matched voice
         command (see _detect_switch_command) — never inferred from a
         single foreign word appearing mid-stream.
+    - text frame (JSON): {"type": "confirm_turn", "turn_order": int}
+        patient tapped "Yes, that's right" on a turn held back for
+        confirmation (low_confidence or language_mismatch) — feeds the
+        original recognized text into the LLM pipeline now.
+    - text frame (JSON): {"type": "correct_turn", "turn_order": int, "text": "..."}
+        patient tapped "No" and typed a correction — feeds the CORRECTED
+        text instead; the disputed original is dropped.
+    - text frame (JSON): {"type": "discard_turn", "turn_order": int}
+        patient tapped "No" and chose to just re-speak it — drops the
+        held-back turn outright, never reaches the LLM.
 
   Server -> Client (all JSON text frames)
     - {"type": "transcript", "text": ..., "is_final": bool, "turn_order": int,
-       "confidence": float|null, "low_confidence": bool,
-       "language_tag": "AR"|"EN"|"AR+EN"|null}
-        (confidence/low_confidence/language_tag only meaningful when
-        is_final; null for partial turns)
+       "confidence": float|null, "low_confidence": bool, "language_mismatch": bool,
+       "needs_confirmation": bool, "language_tag": "AR"|"EN"|"AR+EN"|null}
+        (confidence/low_confidence/language_mismatch/needs_confirmation/
+        language_tag only meaningful when is_final; null/false for partial
+        turns. needs_confirmation = low_confidence OR language_mismatch;
+        when true, this turn is held server-side — see confirm_turn/
+        correct_turn/discard_turn above — NOT yet fed to the LLM.
+        language_mismatch flags a final turn in an Arabic-mode session
+        with zero Arabic characters at all — a whole-turn English leak,
+        not a single embedded drug-brand-name word, which is left alone.)
     - {"type": "summary", "summary": {...IntakeSummary...}, "escalate_to_interpreter": bool,
        "deterministic_flags": [...], "processing_time_ms": float}
         (processing_time_ms is the Gemini call duration only, not total
         time since the patient stopped talking — the debounce wait is
         separate and already surfaced via the "Finishing up..." status.
         IntakeSummary now also carries critical_fields (the transcript
-        integrity layer — see llm_pipeline.py) and needs_human_review/
-        review_reason. deterministic_flags lists which of Gemini's
-        red_flags came from the non-negotiable keyword check, not Gemini's
-        own judgment — see DETERMINISTIC_RED_FLAGS in llm_pipeline.py.)
+        integrity layer — see llm_pipeline.py), needs_human_review/
+        review_reason, and conversation_complete (true only on Gemini's own
+        natural closing reply — see _send_summary). deterministic_flags
+        lists which of Gemini's red_flags came from the non-negotiable
+        keyword check, not Gemini's own judgment — see
+        DETERMINISTIC_RED_FLAGS in llm_pipeline.py.)
     - {"type": "escalation", "red_flags": [...]}
+        fires once, immediately, the first time a session becomes
+        high-urgency — a visual/banner indicator only. The conversation
+        keeps running its normal remaining follow-ups after this; it does
+        NOT end the session (see _send_escalation).
     - {"type": "language_switched", "lang": "ar"|"en"}
         confirms a switch_language request (or voice command) completed
     - {"type": "audio", "context": "speak" | "escalation" | "agent_reply", "format": "mp3", "audio_base64": "..."}
         (agent_reply is Gemini's own conversational reply — greeting,
-        follow-up question, or closing — replacing the old generic
-        confirmation; muted on an escalating turn, see _send_summary)
+        follow-up question, or closing. "escalation" context now only ever
+        fires as part of the FINAL closing statement, alongside
+        session_complete below — never mid-conversation anymore.)
+    - {"type": "session_complete", "escalated": bool}
+        the conversation has concluded (its closing statement — normal or
+        the fixed escalation notice — has just been spoken) and the
+        session is now locked: no further TTS/listening on this
+        connection. The frontend disables the mic and offers "Start New
+        Session" (a fresh WebSocket connection), rather than silently
+        restarting the greeting on the same session (see the session-lock fix below).
     - {"type": "error", "message": "..."}
 
 Run (dev):  uvicorn server:app --reload --port 8000        (from backend/)
@@ -227,6 +269,31 @@ class SinaSession:
         self._turn_order_offset = 0
         self._highest_turn_order_seen = -1
         self._switching_language = False
+        # Escalation-continuation fix: a high-urgency deterministic match used to mute
+        # agent_reply for the rest of the session and speak the interpreter
+        # notice on every subsequent (debounced) summary — ending the
+        # conversation early, before medications/allergies/duration were
+        # ever gathered. Now the escalation BANNER still fires immediately
+        # (this flag makes that idempotent — see _send_escalation), but the
+        # conversation keeps asking its normal remaining follow-ups; only
+        # once Gemini's own conversation_complete flag says intake is
+        # reasonably done does the session actually end — see _send_summary.
+        self._escalation_banner_shown = False
+        # Session-lock fix: once a session has concluded (escalating or not), no
+        # further TTS/listening should happen and the transcript is done
+        # accumulating. Sessions no longer resume/restart in place — a
+        # fresh session is a new WebSocket connection (see frontend's
+        # "Start New Session"), so there is no separate reset path here.
+        self._session_locked = False
+        # Turn-confirmation / language-leak fix: turns flagged low_confidence OR language_mismatch
+        # (see _on_stt_turn) are held here, keyed by (offset-adjusted)
+        # turn_order, INSTEAD of being fed to self.llm immediately — an
+        # uncertain or wrong-language turn must not silently become
+        # accepted clinical content. Resolved by handle_client_message on
+        # "confirm_turn" (feed as-is), "correct_turn" (feed corrected text),
+        # or "discard_turn" (drop — never reaches the LLM). Anything left
+        # pending at session end is simply never fed; that's the point.
+        self._pending_turns: dict[int, dict] = {}
 
     async def start(self) -> None:
         await self.stt.connect()
@@ -266,6 +333,13 @@ class SinaSession:
     # ---- STT -> frontend + LLM -------------------------------------------------
 
     async def _on_stt_turn(self, turn: dict) -> None:
+        if self._session_locked:
+            # Session-lock fix: the conversation has already concluded (closing
+            # statement spoken, mic locked client-side). Any audio still in
+            # flight when that happened could still produce a trailing Turn
+            # message here; drop it rather than reviving the pipeline.
+            return
+
         is_final = bool(turn.get("end_of_turn"))
         text = turn.get("transcript") or turn.get("utterance") or ""
 
@@ -291,14 +365,31 @@ class SinaSession:
 
         confidence = _average_word_confidence(turn) if is_final else None
         low_confidence = confidence is not None and confidence < LOW_CONFIDENCE_THRESHOLD
+        language_tag = _detect_language_tag(text) if is_final else None
+        # Language-leak safeguard: language_codes pins AssemblyAI toward one
+        # language but (per its own docs, and confirmed by this bug report)
+        # is a strong bias, not a hard filter — some leakage can still get
+        # through. A single English word embedded in an otherwise-Arabic
+        # turn is legitimate (a drug brand name) and already tagged AR+EN
+        # by _detect_language_tag, left untouched here. But a FINAL turn in
+        # an Arabic-mode session with ZERO Arabic characters at all — the
+        # whole turn came out in English — is the actual leakage this is
+        # about, not normal code-mixing. Flagged the same way as
+        # low_confidence (reusing the Yes/No confirmation flow described below)
+        # rather than silently passed through or blindly discarded, since a
+        # substring filter would also strip a legitimately-English drug name.
+        language_mismatch = bool(
+            is_final and self._current_lang == "ar" and language_tag == "EN"
+        )
         if low_confidence:
             self._pending_low_confidence = True
+        needs_confirmation = is_final and (low_confidence or language_mismatch)
         await self._send_json(
             {
                 "type": "transcript",
                 "text": text,
                 "is_final": is_final,
-                "language_tag": _detect_language_tag(text) if is_final else None,
+                "language_tag": language_tag,
                 # AssemblyAI sends an unformatted end_of_turn=true Turn message
                 # immediately, then a formatted one for the same turn_order a
                 # moment later — the frontend uses this to update one bubble
@@ -308,8 +399,25 @@ class SinaSession:
                 "turn_order": turn_order,
                 "confidence": confidence,
                 "low_confidence": low_confidence,
+                "language_mismatch": language_mismatch,
+                "needs_confirmation": needs_confirmation,
             }
         )
+
+        if not is_final:
+            return
+
+        if needs_confirmation:
+            # Turn-confirmation / language-leak fix: held back from the LLM pipeline until the patient
+            # (or clinician) explicitly confirms, corrects, or discards it
+            # via handle_client_message — never silently accepted as
+            # clinical content just because it happened to arrive. Keyed by
+            # turn_order, which is unique for the life of the session (see
+            # the offset above).
+            if turn_order is not None:
+                self._pending_turns[turn_order] = turn
+            return
+
         # LLMPipeline.on_turn already ignores partials and debounces Gemini
         # calls internally (see llm_pipeline.py) to stay under the free-tier
         # rate limit. Caught here because on_turn() is awaited directly from
@@ -326,6 +434,15 @@ class SinaSession:
     # ---- LLM -> frontend ---------------------------------------------------
 
     async def _send_summary(self, result: IntakeResult) -> None:
+        if self._session_locked:
+            # A debounced summarize() can still land after the session
+            # already concluded (session-lock fix) — e.g. one last coalesced batch
+            # that was in flight when conversation_complete came back true.
+            # The closing statement already spoke and the mic is locked
+            # client-side; don't send another summary or speak anything
+            # further over it.
+            return
+
         await self._send_json(
             {
                 "type": "summary",
@@ -336,38 +453,85 @@ class SinaSession:
             }
         )
         self._pending_low_confidence = False
-        # Escalation gets its own spoken notice (_send_escalation) and
-        # takes priority — mute the routine conversational reply rather
-        # than speak both, per the explicit requirement that agent_reply
-        # must never compete with or follow an escalation notice.
-        #
-        # Deliberately NOT muted on low_confidence/needs_human_review
-        # anymore (unlike the old generic "Got it, noted" confirmation this
-        # replaced): agent_reply is now a real conversational turn — e.g.
-        # asking about allergies next — and silencing the whole reply just
-        # because one unrelated field was ambiguous would break the
-        # conversation's flow. The amber uncertainty UI already surfaces
-        # that separately.
-        if not result.escalate_to_interpreter and result.summary.agent_reply:
+
+        summary = result.summary
+        # Escalation-continuation fix: escalating no longer mutes agent_reply or ends the
+        # session early. The conversation keeps asking its normal remaining
+        # follow-ups (medications, allergies, duration, severity...) exactly
+        # as it would in a calm case — see llm_pipeline.py's SYSTEM_PROMPT,
+        # which now instructs Gemini to behave identically regardless of
+        # urgency. Only once Gemini's own conversation_complete flag says
+        # intake is reasonably done do we speak a FINAL statement and lock
+        # the session; if escalating, that final statement is the fixed,
+        # deterministic ESCALATION_MESSAGE (never Gemini's own wording —
+        # safety-critical phrasing stays outside the LLM's control), not
+        # whatever closing line Gemini itself drafted.
+        if summary.conversation_complete:
+            if result.escalate_to_interpreter:
+                message = ESCALATION_MESSAGE_AR if self._current_lang == "ar" else ESCALATION_MESSAGE_EN
+                context = "escalation"
+            else:
+                message = summary.agent_reply
+                context = "agent_reply"
+            if message:
+                try:
+                    audio = await self._current_tts().synthesize(message)
+                    await self._send_audio(audio, context=context)
+                except Exception:
+                    logger.exception("Failed to synthesize closing statement")
+            await self._lock_session(escalated=result.escalate_to_interpreter)
+            return
+
+        if summary.agent_reply:
             try:
-                audio = await self._current_tts().synthesize(result.summary.agent_reply)
+                audio = await self._current_tts().synthesize(summary.agent_reply)
                 await self._send_audio(audio, context="agent_reply")
             except Exception:
                 logger.exception("Failed to synthesize agent_reply")
 
     async def _send_escalation(self, result: IntakeResult) -> None:
+        """Fires the visual escalation banner/indicator IMMEDIATELY the
+        first time a session becomes high-urgency (item 1a) — idempotent,
+        since escalate_to_interpreter stays true on every subsequent
+        (debounced) summary for the rest of the session once a match lands
+        in the cumulative transcript, and the banner only needs to appear
+        once. Deliberately does NOT speak the interpreter notice or end
+        anything here anymore — that now happens in _send_summary, only
+        once conversation_complete is also true, so the conversation keeps
+        gathering the remaining follow-ups instead of cutting off early."""
+        if self._escalation_banner_shown:
+            return
+        self._escalation_banner_shown = True
         await self._send_json({"type": "escalation", "red_flags": result.summary.red_flags})
-        message = ESCALATION_MESSAGE_AR if self._current_lang == "ar" else ESCALATION_MESSAGE_EN
+
+    async def _lock_session(self, escalated: bool) -> None:
+        """Session-lock fix: called once the closing statement (normal or escalation)
+        has been spoken. No more TTS/listening happens after this — the
+        mic is locked client-side on receiving session_complete, and the
+        STT connection is closed server-side too so a stray trailing audio
+        chunk can't revive anything. A fresh conversation is a brand new
+        WebSocket connection (see frontend's "Start New Session"), not a
+        reset of this one."""
+        self._session_locked = True
+        await self._send_json({"type": "session_complete", "escalated": escalated})
         try:
-            audio = await self._current_tts().synthesize(message)
-            await self._send_audio(audio, context="escalation")
+            await self.stt.close()
         except Exception:
-            logger.exception("Failed to synthesize escalation notice")
+            logger.exception("Error closing STT after session lock")
 
     # ---- client-initiated actions ------------------------------------------
 
     async def handle_client_message(self, message: dict) -> None:
         msg_type = message.get("type")
+
+        if self._session_locked and msg_type not in ("end",):
+            # Session-lock fix: once concluded, no further TTS/listening/pending-turn
+            # resolution — the frontend disables the mic and any of these
+            # actions on the old connection would be stale by definition. A
+            # fresh conversation is a brand new WebSocket connection.
+            # "end" is still allowed as a harmless no-op-ish ack path in
+            # case a client message crosses with the server's own lock.
+            return
 
         if msg_type == "speak":
             text = (message.get("text") or "").strip()
@@ -406,6 +570,42 @@ class SinaSession:
                 except Exception:
                     logger.exception("Error switching language")
                     await self._send_json({"type": "error", "message": "Language switch failed"})
+
+        elif msg_type == "confirm_turn":
+            # Turn-confirmation fix: patient tapped "Yes, that's right" on a turn that
+            # was held back (low_confidence or language_mismatch — see
+            # _on_stt_turn). Feed the ORIGINAL recognized text to the LLM
+            # pipeline now, exactly as any normal turn would have been.
+            turn_order = message.get("turn_order")
+            turn = self._pending_turns.pop(turn_order, None)
+            if turn is not None:
+                try:
+                    await self.llm.on_turn(turn)
+                except Exception:
+                    logger.exception("Error processing confirmed turn in LLM pipeline")
+
+        elif msg_type == "correct_turn":
+            # Turn-confirmation fix: patient tapped "No" and typed a correction (reusing
+            # the critical-fields tap-to-fix pattern). Feed the CORRECTED
+            # text instead of what AssemblyAI originally produced — the
+            # disputed original is dropped, never reaching Gemini.
+            turn_order = message.get("turn_order")
+            corrected_text = (message.get("text") or "").strip()
+            turn = self._pending_turns.pop(turn_order, None)
+            if turn is not None and corrected_text:
+                corrected_turn = dict(turn)
+                corrected_turn["transcript"] = corrected_text
+                try:
+                    await self.llm.on_turn(corrected_turn)
+                except Exception:
+                    logger.exception("Error processing corrected turn in LLM pipeline")
+
+        elif msg_type == "discard_turn":
+            # Turn-confirmation fix: patient tapped "No" and chose to just re-speak it
+            # instead of typing a correction. Drop it outright — it never
+            # becomes clinical content, confirmed or otherwise.
+            turn_order = message.get("turn_order")
+            self._pending_turns.pop(turn_order, None)
 
         else:
             logger.warning("Unknown client message type: %r", msg_type)
