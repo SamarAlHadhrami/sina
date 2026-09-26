@@ -41,6 +41,7 @@
         "Sina collects and organizes intake information. It does not diagnose " +
         "conditions or replace emergency services. All escalations are " +
         "reviewed by a human.",
+      escalationFlagged: "Flagged as high priority",
       escalationConnecting: "Connecting you with a human interpreter",
       escalationConnected: "Interpreter connected",
       escalationBody: "This case has been flagged as high urgency and requires immediate human attention.",
@@ -118,6 +119,7 @@
       disclaimer:
         "تقوم سينا بجمع وتنظيم معلومات الفحص الأولي. وهي لا تشخّص الحالات " +
         "ولا تُغني عن خدمات الطوارئ. تخضع جميع حالات التصعيد لمراجعة بشرية.",
+      escalationFlagged: "تم تصنيفها كأولوية عالية",
       escalationConnecting: "جارٍ توصيلك بمترجم بشري",
       escalationConnected: "تم توصيل المترجم",
       escalationBody: "تم تصنيف هذه الحالة على أنها عاجلة وتتطلب اهتمامًا بشريًا فوريًا.",
@@ -616,7 +618,10 @@
       el.clinicalNotesSection.hidden = true;
     }
 
-    renderCriticalFields(summary.critical_fields);
+    // Transcript Integrity / critical-fields section is intentionally not
+    // shown in the patient-facing summary anymore — the underlying data
+    // still arrives in `summary.critical_fields` on every payload (kept
+    // for any future export/internal use), it's just not rendered here.
 
     if (summary.needs_human_review) {
       el.reviewBanner.hidden = false;
@@ -625,9 +630,16 @@
       el.reviewBanner.hidden = true;
     }
 
-    if (payload.escalate_to_interpreter) {
-      showEscalation();
-    }
+    // NOTE: the animated "Connecting you to an interpreter..." sequence is
+    // deliberately NOT triggered here anymore. This used to fire on every
+    // summary for the rest of an escalating session (escalate_to_interpreter
+    // stays true once set — see llm_pipeline.py's debounce design), which
+    // replayed the full connecting/connected animation on every debounced
+    // summary and made an otherwise-normal, still-ongoing conversation look
+    // stalled/stuck. The one-time immediate "flagged" indicator comes from
+    // the server's dedicated "escalation" message (see handleServerMessage)
+    // instead, and the real connecting/connected sequence is deferred to
+    // "session_complete" (the actual final handoff) — see there.
   }
 
   function renderCriticalFields(fields) {
@@ -742,13 +754,32 @@
   // correctly re-translate the headline if the language changes while an
   // escalation is already showing.
   function updateEscalationText() {
-    if (escalationState === "connecting") {
+    if (escalationState === "flagged") {
+      el.escalationHeadline.textContent = t("escalationFlagged");
+      el.escalationIcon.innerHTML = "&#9888;"; // warning triangle
+    } else if (escalationState === "connecting") {
       el.escalationHeadline.textContent = t("escalationConnecting");
       el.escalationIcon.innerHTML = "&#9888;"; // warning triangle
     } else if (escalationState === "connected") {
       el.escalationHeadline.textContent = t("escalationConnected");
       el.escalationIcon.innerHTML = "&#10003;"; // checkmark
     }
+  }
+
+  // Immediate, calm signal (fired once, the moment a red flag is detected —
+  // see the "escalation" server message): a static badge/banner state only,
+  // no "connecting" animation, no dots, no implication a handoff is already
+  // happening. The real connecting/connected sequence is deferred to
+  // showEscalation() below, called only once the conversation actually
+  // concludes (session_complete with escalated=true).
+  function showFlaggedBadge() {
+    el.escalationBanner.hidden = false;
+    el.escalationBanner.classList.remove("connecting", "connected");
+    el.escalationBanner.classList.add("flagged");
+    escalationState = "flagged";
+    updateEscalationText();
+    el.escalationDots.hidden = true;
+    el.escalationBanner.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function showEscalation() {
@@ -762,7 +793,7 @@
     }
 
     el.escalationBanner.hidden = false;
-    el.escalationBanner.classList.remove("connected");
+    el.escalationBanner.classList.remove("connected", "flagged");
     el.escalationBanner.classList.add("connecting");
     escalationState = "connecting";
     updateEscalationText();
@@ -875,7 +906,11 @@
         break;
 
       case "escalation":
-        showEscalation();
+        // Immediate, calm signal only (fires once, the moment a red flag
+        // is detected) — a static "flagged high priority" badge, not the
+        // animated "connecting to interpreter" sequence. That's deferred
+        // to session_complete below, once the conversation actually ends.
+        showFlaggedBadge();
         break;
 
       case "language_switched":
@@ -917,6 +952,13 @@
         // rather than waiting for the patient to tap stop — the server
         // decided the conversation is over, possibly while the mic was
         // still actively recording.
+        //
+        // The real "Connecting you to an interpreter... Interpreter
+        // connected" animated sequence is deferred to exactly this moment
+        // (not the earlier immediate flag) — this is the actual final
+        // handoff action, alongside the fixed escalation audio the server
+        // just sent.
+        if (msg.escalated) showEscalation();
         lockSessionComplete(msg.escalated);
         break;
 

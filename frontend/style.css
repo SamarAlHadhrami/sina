@@ -105,9 +105,16 @@
 }
 
 .skip-link {
+  /* Hidden via an off-screen TOP offset, not a huge negative left/right —
+     found live (real Chrome, RTL Arabic mode): `left: -9999px` combined
+     with `dir="rtl"` on <html> balloons the page's scrollable width by
+     ~9999px in the opposite direction, which the browser then auto-scrolls
+     to show, pushing all real content thousands of pixels off-screen —
+     i.e. the reported "white screen" after selecting Arabic. A vertical
+     offset has no such direction-dependent scroll-width side effect. */
   position: absolute;
-  left: -9999px;
-  top: auto;
+  top: -40px;
+  left: 0;
   background: var(--brand-dark);
   color: white;
   padding: 10px 16px;
@@ -116,7 +123,6 @@
 }
 
 .skip-link:focus {
-  left: 0;
   top: 0;
 }
 
@@ -284,6 +290,21 @@ main {
   color: var(--danger);
   border-radius: var(--radius);
   padding: 16px 18px;
+}
+
+/* Calm "flagged high priority" state (immediate, on red-flag detection) —
+   deliberately amber/static, not the red/animated "connecting" look, so it
+   doesn't read as an active handoff already in progress. That's reserved
+   for .connecting/.connected, shown only once the conversation actually
+   concludes (see showEscalation() in app.js). */
+.escalation-banner.flagged {
+  background: var(--urgency-medium-bg);
+  border-color: #f3e2bf;
+  color: var(--urgency-medium-text);
+}
+
+.escalation-banner.flagged p {
+  color: var(--urgency-medium-text);
 }
 
 .escalation-banner strong {
