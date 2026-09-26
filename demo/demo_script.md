@@ -12,14 +12,19 @@ Sessions are single-language (Arabic-only or English-only, picked via the
 toggle) — a deliberate accuracy decision. The cases below switch languages
 *explicitly*, mid-session, never mixing within one sentence.
 
+The language choice now drives the **entire UI**, not just the AI's own
+replies (which already tracked session language on their own) — labels,
+buttons, status text, section headings, everything flips with it, both at
+the first-load popup and on every later switch.
+
 ---
 
 ## Structure & timing budget
 
 | Segment | Time | Content |
 |---|---|---|
-| 1. Problem intro | 0:00–0:35 (35s) | The gap Sina fills |
-| 2. Pre-session form | 0:35–0:50 (15s) | Name/age/occupation, quick |
+| 1. Problem intro | 0:00–0:30 (30s) | The gap Sina fills |
+| 2. Language popup + pre-session form | 0:30–0:50 (20s) | Full-app language choice, then name/age/occupation |
 | 3. Live demo — Case A (conversational loop) | 0:50–2:30 (100s) | Greeting → follow-ups → uncertainty → language switch → closing |
 | 4. Live demo — Case B (deterministic escalation) | 2:30–3:15 (45s) | Calm-toned chest pain still escalates |
 | 5. Tech explanation | 3:15–3:45 (30s) | Conversational layer, deterministic safety, Medical Mode |
@@ -41,10 +46,23 @@ of narrating over them.
 
 ---
 
-## 2. Pre-session form (0:35–0:50)
+## 2. Language popup + pre-session form (0:30–0:50)
 
-**Action:** Show the "Before we start" form. Fill in **Name: Sara**,
-**Age: 34**, **Occupation: Teacher**. Tap **Continue**.
+**Action:** On first load, the app shows a full-screen language choice —
+"Choose your language / اختر لغتك" — before anything else is usable. Tap
+**العربية**.
+
+**Expected on-screen behavior:** The popup closes and the ENTIRE UI —
+page title, form labels, button text, status pill, "Listening language"
+toggle, everything — is now in Arabic, not just the parts the AI itself
+speaks (those already tracked session language independently).
+
+**Narrate:** "One choice up front sets the whole interface, not just what
+Sina says back."
+
+**Action:** Show the "Before we start" form, now in Arabic. Fill in
+**Name: Sara**, **Age: 34**, **Occupation: Teacher**. Tap **متابعة**
+(Continue).
 
 **Narrate:** "Just enough to personalize the conversation — name, age,
 occupation. No clinical history here; everything medical is voice only,
@@ -54,7 +72,8 @@ starting now."
 
 ## 3. Live demo — Case A: the conversational loop (0:50–2:30)
 
-**Action:** Toggle set to **Arabic**. Tap the mic button.
+**Action:** Toggle already set to **Arabic** from the popup choice. Tap the
+mic button.
 
 **Speak:** "مرحبا سينا." *(marḥaban Sīnā — "Hello Sina")*
 
@@ -70,7 +89,10 @@ headache for two days")*
 **Expected on-screen behavior:** Sina asks a natural follow-up — medications
 haven't been mentioned yet — addressing Sara by name, e.g. *"سارة، هل أخذتِ
 أي دواء للصداع؟"* ("Sara, have you taken any medication for the headache?")
-Not a fixed script — Gemini decides what's actually still missing.
+Not a fixed script — Gemini decides what's actually still missing, picking
+one of: medications, allergies, duration/onset, recurrence ("has this
+happened before"), or severity/pattern ("constant or does it come and
+go") — whichever is the single most relevant gap, never a checklist.
 
 **Speak** (deliberately mumble the medication name):
 "آخذ... بنادول... أو بنادكس، مو متأكد." *(ākhudh... Panadol... aw Panadex,
@@ -95,7 +117,9 @@ original mishearing, so correction is an explicit UI action.
 
 **Expected on-screen behavior:** Status pill briefly reads "Switching to
 English…", then back to "Listening" — AssemblyAI reconnects cleanly, but
-nothing on screen resets.
+nothing on screen resets. The full UI also flips back to English right
+here — labels, headings, the status pill itself — not just the language
+Sina listens/speaks in.
 
 **Speak:** "I don't have any drug allergies."
 
@@ -142,12 +166,15 @@ shortly" — in English, matching the now-active language.
 > "Under the hood: one Gemini call per turn batch now returns both the
 > structured clinical extraction AND Sina's spoken reply together — no
 > doubled API usage for the conversation. That reply greets the patient
-> by name, asks about whatever's still missing one question at a time,
-> and closes naturally once symptoms, medications, and allergies are
-> covered. But it never gets the final word on danger: a small, reviewed
-> keyword list runs directly against the raw transcript and can force an
-> escalation the model didn't make — never the reverse — and always takes
-> priority over a routine reply."
+> by name, asks about whatever's still missing one question at a time —
+> medications, allergies, duration, recurrence, severity — and closes
+> naturally once symptoms, medications, and allergies are covered. But it
+> never gets the final word on danger: a small, reviewed keyword list runs
+> directly against the raw transcript and can force an escalation the
+> model didn't make — never the reverse — and always takes priority over a
+> routine reply. And the language you pick up front — at that first popup,
+> or any later switch — drives the whole interface, not just what Sina
+> says back."
 
 ---
 
@@ -172,8 +199,13 @@ End on the Sina UI, idle, ready for the next patient.
   per-minute limit — confirmed hit mid-testing this round.** Each
   conversational turn is still one call (agent_reply was added to the
   existing schema, not a second call), but a live conversation naturally
-  uses several turns. Do a full dry run well before recording, not right
-  before, and watch for it during the actual take.
+  uses several turns. A third fallback tier (Groq, `openai/gpt-oss-120b`)
+  now kicks in automatically if both Gemini keys are unavailable, so a cap
+  hit mid-recording no longer stalls the demo — but do a full dry run
+  beforehand regardless, since Groq also has its own (much higher) rate
+  limit.
+- The language popup blocks the rest of the page until a choice is made —
+  don't forget it's there when starting the take from a fresh page load.
 - The language switch reconnects AssemblyAI in under a second in testing,
   but allow a beat of silence after tapping the toggle before speaking the
   next line.

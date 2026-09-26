@@ -37,6 +37,73 @@
   box-sizing: border-box;
 }
 
+/* ---------- first-load language popup ---------- */
+
+.lang-popup {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(36, 31, 51, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.lang-popup-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 32px 28px;
+  max-width: 380px;
+  width: 100%;
+  text-align: center;
+  animation: card-in 0.34s var(--ease-out);
+}
+
+.lang-popup-card h2 {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--brand-dark);
+}
+
+.lang-popup-sub {
+  margin: 0 0 22px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.lang-popup-options {
+  display: flex;
+  gap: 12px;
+}
+
+.lang-popup-option {
+  flex: 1;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 14px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--brand-dark);
+  cursor: pointer;
+  transition: background 0.15s var(--ease-standard), border-color 0.15s var(--ease-standard),
+    transform 0.15s var(--ease-standard);
+}
+
+.lang-popup-option:hover {
+  background: var(--brand-tint);
+  border-color: var(--brand);
+}
+
+.lang-popup-option:active {
+  transform: scale(0.97);
+}
+
 .skip-link {
   position: absolute;
   left: -9999px;

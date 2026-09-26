@@ -11,7 +11,170 @@
 (() => {
   const STT_SAMPLE_RATE = 16000;
 
+  // -------------------------------------------------------------------
+  // Full-app UI translations (item 2: not just the AI's own replies,
+  // which already follow the session language on their own — this covers
+  // every piece of static/dynamic UI chrome: labels, statuses, buttons,
+  // section headings). `uiLang` always mirrors the active session
+  // language ("ar"/"en") — set once via the first-load popup, and kept in
+  // sync afterwards by both the manual toggle and a voice-triggered
+  // switch (see the "language_switched" server message and the
+  // langToggle change handler below).
+  // -------------------------------------------------------------------
+  const STRINGS = {
+    en: {
+      pageTitle: "Sina — Clinical Intake",
+      brandSubtitle: "Bilingual Clinical Intake Assistant",
+      skipLink: "Skip to main content",
+      statusIdle: "Idle",
+      statusListening: "Listening",
+      statusConnecting: "Connecting…",
+      statusFinishing: "Finishing up…",
+      statusError: "Something went wrong",
+      statusConnectionLost: "Connection lost",
+      statusMicDenied: "Microphone access denied",
+      statusCouldNotConnect: "Could not connect to Sina",
+      statusSwitchingTo: (lang) => `Switching to ${STRINGS[uiLang][lang === "ar" ? "langNameAr" : "langNameEn"]}…`,
+      langNameAr: "Arabic",
+      langNameEn: "English",
+      disclaimer:
+        "Sina collects and organizes intake information. It does not diagnose " +
+        "conditions or replace emergency services. All escalations are " +
+        "reviewed by a human.",
+      escalationConnecting: "Connecting you with a human interpreter",
+      escalationConnected: "Interpreter connected",
+      escalationBody: "This case has been flagged as high urgency and requires immediate human attention.",
+      reviewHeadline: "Flagged for human review",
+      reviewReasonDefault: "A critical field could not be determined with confidence.",
+      patientFormHeading: "Before we start",
+      patientFormHint:
+        "Just a few details to personalize the conversation — all clinical " +
+        "information (symptoms, medications, allergies) is collected by " +
+        "voice only, not here.",
+      fieldName: "Name",
+      fieldAge: "Age",
+      fieldOccupation: "Occupation",
+      continueButton: "Continue",
+      listeningLanguageLegend: "Listening language",
+      micHintIdle: "Tap to begin speaking with Sina",
+      micHintListening: "Listening — tap again to stop",
+      micAriaStart: "Start speaking with Sina",
+      micAriaStop: "Stop speaking with Sina",
+      transcriptHeading: "Transcript",
+      transcriptPlaceholder: "Your conversation will appear here as you speak, in English or Arabic.",
+      confidencePrompt: "Did I hear that right?",
+      confidenceDismiss: "Yes, that's right",
+      summaryHeading: "Intake Summary",
+      exportPdf: "Export as PDF",
+      symptomsHeading: "Symptoms",
+      medicationsHeading: "Medications",
+      allergiesHeading: "Allergies",
+      noneReported: "None reported",
+      redFlagsHeading: "Red Flags",
+      clinicalNotesHeading: "Clinical Notes",
+      clinicalNotesCaveat: "AI-generated cross-references for clinician review — not a diagnosis.",
+      criticalFieldsHeading: "Transcript Integrity — Critical Fields",
+      criticalFieldsCaveat:
+        "What was said, what Sina extracted, and whether it's confirmed — " +
+        "for clinician audit, not just the extracted values above.",
+      fieldTypeMedication: "Medication",
+      fieldTypeAllergy: "Allergy",
+      fieldTypeDuration: "Duration/Onset",
+      fieldTypeNegation: "Negation",
+      statusUnconfirmed: "unconfirmed",
+      statusConfirmed: "confirmed",
+      statusCorrected: "corrected",
+      statusFlagged: "flagged",
+      confirmCorrect: "Confirm correct",
+      editButton: "Edit",
+      saveButton: "Save",
+      urgencyLow: "low",
+      urgencyMedium: "medium",
+      urgencyHigh: "high",
+    },
+    ar: {
+      pageTitle: "سينا — الفحص السريري الأولي",
+      brandSubtitle: "مساعد الفحص السريري الأولي ثنائي اللغة",
+      skipLink: "الانتقال إلى المحتوى الرئيسي",
+      statusIdle: "خامل",
+      statusListening: "يستمع",
+      statusConnecting: "جارٍ الاتصال…",
+      statusFinishing: "جارٍ الإنهاء…",
+      statusError: "حدث خطأ ما",
+      statusConnectionLost: "انقطع الاتصال",
+      statusMicDenied: "تم رفض الوصول إلى الميكروفون",
+      statusCouldNotConnect: "تعذّر الاتصال بسينا",
+      statusSwitchingTo: (lang) => `جارٍ التبديل إلى ${STRINGS[uiLang][lang === "ar" ? "langNameAr" : "langNameEn"]}…`,
+      langNameAr: "العربية",
+      langNameEn: "الإنجليزية",
+      disclaimer:
+        "تقوم سينا بجمع وتنظيم معلومات الفحص الأولي. وهي لا تشخّص الحالات " +
+        "ولا تُغني عن خدمات الطوارئ. تخضع جميع حالات التصعيد لمراجعة بشرية.",
+      escalationConnecting: "جارٍ توصيلك بمترجم بشري",
+      escalationConnected: "تم توصيل المترجم",
+      escalationBody: "تم تصنيف هذه الحالة على أنها عاجلة وتتطلب اهتمامًا بشريًا فوريًا.",
+      reviewHeadline: "تم تمييزها للمراجعة البشرية",
+      reviewReasonDefault: "تعذّر تحديد أحد الحقول المهمة بثقة كافية.",
+      patientFormHeading: "قبل أن نبدأ",
+      patientFormHint:
+        "فقط بعض التفاصيل لتخصيص المحادثة — يتم جمع كل المعلومات السريرية " +
+        "(الأعراض، الأدوية، الحساسية) صوتيًا فقط، وليس هنا.",
+      fieldName: "الاسم",
+      fieldAge: "العمر",
+      fieldOccupation: "المهنة",
+      continueButton: "متابعة",
+      listeningLanguageLegend: "لغة الاستماع",
+      micHintIdle: "اضغط لبدء التحدث مع سينا",
+      micHintListening: "يستمع — اضغط مرة أخرى للتوقف",
+      micAriaStart: "ابدأ التحدث مع سينا",
+      micAriaStop: "أوقف التحدث مع سينا",
+      transcriptHeading: "النص المكتوب",
+      transcriptPlaceholder: "ستظهر محادثتك هنا أثناء التحدث، بالعربية أو الإنجليزية.",
+      confidencePrompt: "هل سمعت ذلك بشكل صحيح؟",
+      confidenceDismiss: "نعم، هذا صحيح",
+      summaryHeading: "ملخص الفحص الأولي",
+      exportPdf: "تصدير كملف PDF",
+      symptomsHeading: "الأعراض",
+      medicationsHeading: "الأدوية",
+      allergiesHeading: "الحساسية",
+      noneReported: "لم يُذكر شيء",
+      redFlagsHeading: "علامات الخطر",
+      clinicalNotesHeading: "ملاحظات سريرية",
+      clinicalNotesCaveat: "روابط سريرية أنشأها الذكاء الاصطناعي لمراجعة الطبيب — وليست تشخيصًا.",
+      criticalFieldsHeading: "سلامة النص — الحقول الحرجة",
+      criticalFieldsCaveat:
+        "ما قيل، وما استخلصته سينا، وما إذا تم تأكيده — لمراجعة الطبيب، " +
+        "وليس فقط القيم المستخلصة أعلاه.",
+      fieldTypeMedication: "دواء",
+      fieldTypeAllergy: "حساسية",
+      fieldTypeDuration: "المدة/البداية",
+      fieldTypeNegation: "نفي",
+      statusUnconfirmed: "غير مؤكد",
+      statusConfirmed: "مؤكد",
+      statusCorrected: "تم تصحيحه",
+      statusFlagged: "تم تمييزه",
+      confirmCorrect: "تأكيد الصحة",
+      editButton: "تعديل",
+      saveButton: "حفظ",
+      urgencyLow: "منخفضة",
+      urgencyMedium: "متوسطة",
+      urgencyHigh: "عالية",
+    },
+  };
+
+  // Default before the popup selection — overwritten immediately by
+  // selectLanguage() on first load, and kept in sync with the session
+  // language afterwards. Never left at this default in practice.
+  let uiLang = "en";
+
+  function t(key) {
+    return STRINGS[uiLang][key];
+  }
+
   const el = {
+    langPopup: document.getElementById("langPopup"),
+    langPopupArabic: document.getElementById("langPopupArabic"),
+    langPopupEnglish: document.getElementById("langPopupEnglish"),
     patientFormPanel: document.getElementById("patientFormPanel"),
     patientForm: document.getElementById("patientForm"),
     micPanel: document.getElementById("micPanel"),
@@ -55,6 +218,76 @@
   let isRecording = false;
 
   let escalationConnectedTimer = null;
+  // null | "connecting" | "connected" — tracked separately from the DOM so
+  // applyLanguage() can re-render the escalation headline correctly if the
+  // language changes mid-escalation, without guessing state from text.
+  let escalationState = null;
+  // Tracked so applyLanguage() can re-render the urgency badge in the new
+  // language without needing another summary from the server.
+  let currentUrgency = null;
+
+  const URGENCY_KEYS = { low: "urgencyLow", medium: "urgencyMedium", high: "urgencyHigh" };
+  const FIELD_TYPE_KEYS = {
+    medication: "fieldTypeMedication",
+    allergy: "fieldTypeAllergy",
+    symptom_duration: "fieldTypeDuration",
+    negation: "fieldTypeNegation",
+  };
+  const FIELD_STATUS_KEYS = {
+    unconfirmed: "statusUnconfirmed",
+    confirmed: "statusConfirmed",
+    corrected: "statusCorrected",
+    flagged: "statusFlagged",
+  };
+
+  // -------------------------------------------------------------------
+  // Full-app language selection + live re-translation.
+  //
+  // applyLanguage() re-renders EVERY piece of UI chrome currently on
+  // screen — not just static labels via [data-i18n] (which covers the
+  // fixed markup and anything dynamically created with a matching
+  // data-i18n attribute, e.g. confidence prompts), but also the pieces
+  // that depend on live state (status text, mic hint/aria-label, urgency
+  // badge, escalation headline) which a blind attribute walk can't
+  // resolve on its own. Called once from selectLanguage() on first load,
+  // and again on every mid-session language change (manual toggle or a
+  // voice-triggered switch — see the langToggle handler and the
+  // "language_switched" server message below), so the WHOLE app — not
+  // just the AI's own spoken/written replies, which already track the
+  // session language independently — follows the chosen language.
+  // -------------------------------------------------------------------
+  function applyLanguage(lang) {
+    uiLang = lang;
+    document.documentElement.lang = lang;
+    document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
+    document.title = t("pageTitle");
+
+    document.querySelectorAll("[data-i18n]").forEach((node) => {
+      const key = node.dataset.i18n;
+      const value = STRINGS[lang][key];
+      if (typeof value === "string") {
+        node.textContent = value;
+      }
+    });
+
+    renderStatus();
+    setMicPressed(isRecording);
+    updateEscalationText();
+
+    if (currentUrgency) {
+      el.urgencyBadge.textContent = t(URGENCY_KEYS[currentUrgency] || currentUrgency);
+    }
+  }
+
+  function selectLanguage(lang) {
+    const radio = document.querySelector(`input[name="langMode"][value="${lang}"]`);
+    if (radio) radio.checked = true;
+    applyLanguage(lang);
+    el.langPopup.hidden = true;
+  }
+
+  el.langPopupArabic.addEventListener("click", () => selectLanguage("ar"));
+  el.langPopupEnglish.addEventListener("click", () => selectLanguage("en"));
 
   // Pre-session typed form (name/age/occupation) — collected once before
   // the mic button appears, sent as connection query params so it's
@@ -77,20 +310,27 @@
   // Status / UI helpers
   // ---------------------------------------------------------------------
 
-  function setStatus(mode, text) {
-    el.status.className = "status" + (mode ? " " + mode : "");
-    el.statusText.textContent = text;
+  // currentStatus tracks the semantic state (a STRINGS key + optional
+  // interpolation arg), not literal text, so applyLanguage() can
+  // re-render the right message after a language change without needing
+  // to know what was last displayed.
+  let currentStatus = { mode: "", key: "statusIdle", arg: undefined };
+
+  function setStatus(mode, key, arg) {
+    currentStatus = { mode, key, arg };
+    renderStatus();
+  }
+
+  function renderStatus() {
+    el.status.className = "status" + (currentStatus.mode ? " " + currentStatus.mode : "");
+    const entry = STRINGS[uiLang][currentStatus.key];
+    el.statusText.textContent = typeof entry === "function" ? entry(currentStatus.arg) : entry;
   }
 
   function setMicPressed(pressed) {
     el.micButton.setAttribute("aria-pressed", pressed ? "true" : "false");
-    el.micButton.setAttribute(
-      "aria-label",
-      pressed ? "Stop speaking with Sina" : "Start speaking with Sina"
-    );
-    el.micHint.textContent = pressed
-      ? "Listening — tap again to stop"
-      : "Tap to begin speaking with Sina";
+    el.micButton.setAttribute("aria-label", pressed ? t("micAriaStop") : t("micAriaStart"));
+    el.micHint.textContent = pressed ? t("micHintListening") : t("micHintIdle");
   }
 
   function setConfidencePrompt(wrapperEl, lowConfidence) {
@@ -103,11 +343,13 @@
       prompt = document.createElement("div");
       prompt.className = "confidence-prompt";
       const label = document.createElement("span");
-      label.textContent = "Did I hear that right?";
+      label.textContent = t("confidencePrompt");
+      label.dataset.i18n = "confidencePrompt";
       const dismiss = document.createElement("button");
       dismiss.type = "button";
       dismiss.className = "confidence-dismiss";
-      dismiss.textContent = "Yes, that's right";
+      dismiss.textContent = t("confidenceDismiss");
+      dismiss.dataset.i18n = "confidenceDismiss";
       dismiss.addEventListener("click", () => {
         prompt.hidden = true;
       });
@@ -220,7 +462,8 @@
     listEl.classList.toggle("empty", !items || items.length === 0);
     if (!items || items.length === 0) {
       const li = document.createElement("li");
-      li.textContent = "None reported";
+      li.textContent = t("noneReported");
+      li.dataset.i18n = "noneReported";
       listEl.appendChild(li);
       return;
     }
@@ -240,7 +483,8 @@
       el.latencyStat.textContent = `Processed in ${(payload.processing_time_ms / 1000).toFixed(1)}s`;
     }
 
-    el.urgencyBadge.textContent = summary.urgency;
+    currentUrgency = summary.urgency;
+    el.urgencyBadge.textContent = t(URGENCY_KEYS[summary.urgency] || summary.urgency);
     el.urgencyBadge.className = "urgency-badge urgency-" + summary.urgency;
 
     el.summaryNote.textContent = summary.summary_note || "";
@@ -267,7 +511,7 @@
 
     if (summary.needs_human_review) {
       el.reviewBanner.hidden = false;
-      el.reviewReason.textContent = summary.review_reason || "A critical field could not be determined with confidence.";
+      el.reviewReason.textContent = summary.review_reason || t("reviewReasonDefault");
     } else {
       el.reviewBanner.hidden = true;
     }
@@ -276,13 +520,6 @@
       showEscalation();
     }
   }
-
-  const FIELD_TYPE_LABELS = {
-    medication: "Medication",
-    allergy: "Allergy",
-    symptom_duration: "Duration/Onset",
-    negation: "Negation",
-  };
 
   function renderCriticalFields(fields) {
     el.criticalFieldsList.innerHTML = "";
@@ -300,10 +537,14 @@
       row.className = "critical-field-row";
       const typeLabel = document.createElement("span");
       typeLabel.className = "critical-field-type";
-      typeLabel.textContent = FIELD_TYPE_LABELS[field.field_type] || field.field_type;
+      const typeKey = FIELD_TYPE_KEYS[field.field_type];
+      typeLabel.textContent = typeKey ? t(typeKey) : field.field_type;
+      if (typeKey) typeLabel.dataset.i18n = typeKey;
       const statusLabel = document.createElement("span");
       statusLabel.className = "critical-field-status";
-      statusLabel.textContent = field.status;
+      const statusKey = FIELD_STATUS_KEYS[field.status];
+      statusLabel.textContent = statusKey ? t(statusKey) : field.status;
+      if (statusKey) statusLabel.dataset.i18n = statusKey;
       row.appendChild(typeLabel);
       row.appendChild(statusLabel);
       li.appendChild(row);
@@ -335,17 +576,20 @@
 
         const confirmBtn = document.createElement("button");
         confirmBtn.type = "button";
-        confirmBtn.textContent = "Confirm correct";
+        confirmBtn.textContent = t("confirmCorrect");
+        confirmBtn.dataset.i18n = "confirmCorrect";
         confirmBtn.addEventListener("click", () => {
           field.status = "confirmed";
           li.className = "critical-field-item status-confirmed";
-          statusLabel.textContent = "confirmed";
+          statusLabel.textContent = t("statusConfirmed");
+          statusLabel.dataset.i18n = "statusConfirmed";
           actions.remove();
         });
 
         const editBtn = document.createElement("button");
         editBtn.type = "button";
-        editBtn.textContent = "Edit";
+        editBtn.textContent = t("editButton");
+        editBtn.dataset.i18n = "editButton";
         editBtn.addEventListener("click", () => {
           const input = document.createElement("input");
           input.type = "text";
@@ -353,13 +597,15 @@
           input.value = field.normalized_value;
           const saveBtn = document.createElement("button");
           saveBtn.type = "button";
-          saveBtn.textContent = "Save";
+          saveBtn.textContent = t("saveButton");
+          saveBtn.dataset.i18n = "saveButton";
           saveBtn.addEventListener("click", () => {
             field.normalized_value = input.value;
             field.status = "corrected";
             value.textContent = input.value;
             li.className = "critical-field-item status-corrected";
-            statusLabel.textContent = "corrected";
+            statusLabel.textContent = t("statusCorrected");
+            statusLabel.dataset.i18n = "statusCorrected";
             actions.remove();
           });
           actions.innerHTML = "";
@@ -382,6 +628,20 @@
   // rather than a static, inert warning label.
   const ESCALATION_CONNECTING_MS = 2600;
 
+  // Re-renders the escalation headline/icon from `escalationState` alone —
+  // pulled out of showEscalation() so applyLanguage() can call it too, to
+  // correctly re-translate the headline if the language changes while an
+  // escalation is already showing.
+  function updateEscalationText() {
+    if (escalationState === "connecting") {
+      el.escalationHeadline.textContent = t("escalationConnecting");
+      el.escalationIcon.innerHTML = "&#9888;"; // warning triangle
+    } else if (escalationState === "connected") {
+      el.escalationHeadline.textContent = t("escalationConnected");
+      el.escalationIcon.innerHTML = "&#10003;"; // checkmark
+    }
+  }
+
   function showEscalation() {
     // Guard against re-entry: the same high-urgency session can produce
     // more than one escalation message (a later debounced summary can
@@ -395,17 +655,17 @@
     el.escalationBanner.hidden = false;
     el.escalationBanner.classList.remove("connected");
     el.escalationBanner.classList.add("connecting");
-    el.escalationHeadline.textContent = "Connecting you with a human interpreter";
+    escalationState = "connecting";
+    updateEscalationText();
     el.escalationDots.hidden = false;
-    el.escalationIcon.innerHTML = "&#9888;"; // warning triangle
     el.escalationBanner.scrollIntoView({ behavior: "smooth", block: "start" });
 
     escalationConnectedTimer = setTimeout(() => {
       el.escalationBanner.classList.remove("connecting");
       el.escalationBanner.classList.add("connected");
-      el.escalationHeadline.textContent = "Interpreter connected";
+      escalationState = "connected";
+      updateEscalationText();
       el.escalationDots.hidden = true;
-      el.escalationIcon.innerHTML = "&#10003;"; // checkmark
       escalationConnectedTimer = null;
     }, ESCALATION_CONNECTING_MS);
   }
@@ -467,7 +727,7 @@
       socket.addEventListener("close", () => {
         if (isRecording) {
           // Server dropped the connection unexpectedly mid-session.
-          setStatus("error", "Connection lost");
+          setStatus("error", "statusConnectionLost");
           stopRecording();
         }
       });
@@ -495,7 +755,7 @@
         break;
 
       case "summary":
-        setStatus(isRecording ? "listening" : "", isRecording ? "Listening" : "Idle");
+        setStatus(isRecording ? "listening" : "", isRecording ? "statusListening" : "statusIdle");
         renderSummary(msg);
         break;
 
@@ -507,12 +767,17 @@
         // Confirms a switch_language request (or a matched voice command
         // — see server.py's _detect_switch_command) completed. Sync the
         // visible toggle in case a voice command triggered this instead
-        // of the UI tap.
+        // of the UI tap, and flip the FULL UI language to match (item 2):
+        // a voice-phrase switch is just as much an explicit language
+        // choice as tapping the toggle, so it gets the same full
+        // re-translation via applyLanguage(), not just the STT/TTS/LLM
+        // language the server already switched.
         {
           const radio = document.querySelector(`input[name="langMode"][value="${msg.lang}"]`);
           if (radio) radio.checked = true;
         }
-        if (isRecording) setStatus("listening", "Listening");
+        applyLanguage(msg.lang);
+        if (isRecording) setStatus("listening", "statusListening");
         break;
 
       case "audio":
@@ -523,12 +788,12 @@
         // Server has finished flushing the final summary attempt (including
         // any Gemini retries) — now it's safe to close the socket.
         if (ws) ws.close();
-        setStatus("", "Idle");
+        setStatus("", "statusIdle");
         break;
 
       case "error":
         console.error("Sina server error:", msg.message);
-        setStatus("error", "Something went wrong");
+        setStatus("error", "statusError");
         break;
 
       default:
@@ -570,13 +835,13 @@
   }
 
   async function startRecording() {
-    setStatus("processing", "Connecting…");
+    setStatus("processing", "statusConnecting");
 
     try {
       await connectWebSocket();
     } catch (err) {
       console.error("WebSocket connection failed:", err);
-      setStatus("error", "Could not connect to Sina");
+      setStatus("error", "statusCouldNotConnect");
       return;
     }
 
@@ -586,7 +851,7 @@
       });
     } catch (err) {
       console.error("Microphone access denied:", err);
-      setStatus("error", "Microphone access denied");
+      setStatus("error", "statusMicDenied");
       ws.close();
       return;
     }
@@ -644,7 +909,7 @@
 
     isRecording = true;
     setMicPressed(true);
-    setStatus("listening", "Listening");
+    setStatus("listening", "statusListening");
   }
 
   async function stopRecording() {
@@ -669,7 +934,7 @@
       audioContext = null;
     }
 
-    setStatus("processing", "Finishing up…");
+    setStatus("processing", "statusFinishing");
     setPartial("");
 
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -681,11 +946,11 @@
       setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.close();
-          setStatus("", "Idle");
+          setStatus("", "statusIdle");
         }
       }, 20000);
     } else {
-      setStatus("", "Idle");
+      setStatus("", "statusIdle");
     }
   }
 
@@ -697,19 +962,22 @@
     }
   });
 
-  // Explicit language switch (item 6): an explicit tap here is the only
-  // way this fires — never inferred from a foreign word appearing
-  // mid-stream. Mid-recording, this sends switch_language over the live
-  // WebSocket (server closes the old AssemblyAI stream and reconnects with
-  // the new language, keeping all intake state gathered so far — see
-  // server.py's switch_language()). Before recording starts, there's no
-  // session yet to switch, so this is a no-op beyond the browser's own
-  // radio-button state change; wsUrl() picks up the choice when the
+  // Explicit language switch (item 6, extended by item 2): an explicit tap
+  // here is the only way this fires — never inferred from a foreign word
+  // appearing mid-stream. This is now the FULL app language toggle, not
+  // just the listening language: every tap re-translates the whole UI via
+  // applyLanguage(), whether or not a session is active yet. Mid-recording,
+  // it ALSO sends switch_language over the live WebSocket (server closes
+  // the old AssemblyAI stream and reconnects with the new language, keeping
+  // all intake state gathered so far — see server.py's switch_language()).
+  // Before recording starts, there's no session yet to switch, so only the
+  // UI re-translation happens; wsUrl() picks up the choice when the
   // session connects.
   el.langToggle.querySelectorAll('input[name="langMode"]').forEach((input) => {
     input.addEventListener("change", () => {
+      applyLanguage(input.value);
       if (isRecording && ws && ws.readyState === WebSocket.OPEN) {
-        setStatus("processing", `Switching to ${input.value === "ar" ? "Arabic" : "English"}…`);
+        setStatus("processing", "statusSwitchingTo", input.value);
         ws.send(JSON.stringify({ type: "switch_language", lang: input.value }));
       }
     });

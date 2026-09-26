@@ -24,7 +24,8 @@ video.
   Arabic neural voice) for Arabic, since ElevenLabs has no Arabic voice on
   the free tier (see Known Limitations).
 - **Backend**: FastAPI, one WebSocket per session at `/ws/session`.
-- **Frontend**: plain HTML/CSS/JS, no framework. Mic capture via Web Audio API.
+- **Frontend**: plain HTML/CSS/JS, no framework. Mic capture via Web Audio
+  API. Full bilingual UI (see below) — not just the AI's own replies.
 
 All API keys live in `.env` (gitignored): `ASSEMBLYAI_API_KEY`,
 `GEMINI_API_KEY`, `GEMINI_API_KEY_FALLBACK` (optional), `GROQ_API_KEY`
@@ -86,7 +87,9 @@ it does not get the final word on whether something is dangerous.
    while the same `LLMPipeline` instance keeps running underneath — nothing
    extracted so far is lost. Verified live: fed a turn in Arabic, switched
    to English, fed a turn in English, confirmed both are present together
-   in the accumulated transcript.
+   in the accumulated transcript. Both switch paths (the toggle tap and a
+   matched voice phrase) also re-translate the full UI (see item 10) to
+   match, not just the STT/TTS/LLM language.
 7. **Dropped:** sentiment analysis as an urgency input, and broad generic
    entity highlighting. Neither existed as shipped code before this either —
    noted here because they were cut from consideration, not removed from
@@ -99,8 +102,14 @@ it does not get the final word on whether something is dangerous.
    conversation before any voice starts. The existing Gemini extraction
    call was extended, not doubled, with an `agent_reply` field: it greets
    the patient by name, asks one natural follow-up at a time for whatever's
-   still missing (medication/allergy/duration), then closes once those are
-   covered. `agent_reply` is muted on an escalating turn — the escalation
+   still missing — medication, allergy, and symptom duration/onset remain
+   the priority, with recurrence ("has this happened before") and
+   severity/pattern ("constant or does it come and go") as optional
+   additions asked about naturally when relevant and not already covered —
+   never a checklist, never something the patient already stated. Closing
+   only waits on symptoms/medications/allergies; it won't stall chasing
+   recurrence or severity once those three are covered. `agent_reply` is
+   muted on an escalating turn — the escalation
    notice always takes priority, never a routine question. A second Gemini
    API key can be set as `GEMINI_API_KEY_FALLBACK` in `.env`; on a 429
    (either the per-minute or daily cap), one attempt (with its own 503
@@ -115,6 +124,27 @@ it does not get the final word on whether something is dangerous.
    (`gemini_primary` / `gemini_fallback` / `groq`) and every tier transition
    is logged, so it's always clear which provider actually answered a given
    turn during testing.
+10. **Full-app bilingual UI, not just the AI's own replies.** Before
+    anything else loads, a full-screen popup asks "Choose your language /
+    اختر لغتك" — both native labels shown together since no language is
+    chosen yet. The pick sets `document.documentElement.lang`/`dir`
+    (`rtl` for Arabic) and translates every piece of static and dynamic UI
+    chrome via a `[data-i18n]` attribute walk plus a handful of
+    state-aware re-renders for things a blind attribute walk can't resolve
+    on its own (status pill text, mic hint/aria-label, urgency badge,
+    escalation headline) — labels, buttons, section headings, form fields,
+    status messages, critical-field type/status words, all of it. The
+    existing mid-session language toggle (and a voice-triggered switch via
+    the `language_switched` server message) call the same
+    `applyLanguage()` function, so either path re-translates the whole UI,
+    not just the STT/TTS/LLM language — the AI's own spoken/written
+    replies already tracked session language independently and are
+    unaffected by this. Frontend-only (`frontend/app.js`); no backend
+    change was needed since the server already sends a language on every
+    switch. Verified headless via jsdom: popup visibility/labels, full
+    translation on selection, re-translation on both a manual toggle
+    change and a simulated voice-triggered switch, and non-empty
+    translations for every `[data-i18n]` node in both languages.
 
 ## Repo layout
 
@@ -127,9 +157,9 @@ backend/
   server.py         FastAPI app, SinaSession, wires the three together over /ws/session
   requirements.txt
 frontend/
-  index.html        mic button, transcript panel, summary card, escalation banner
-  app.js            WebSocket client, mic capture + PCM16 downsampling, message handling
-  style.css         calm/clinical design, fixed light theme
+  index.html        mic button, transcript panel, summary card, escalation banner, language popup
+  app.js            WebSocket client, mic capture + PCM16 downsampling, message handling, full-app i18n
+  style.css         calm/clinical design, fixed light theme, language popup overlay
 demo/
   demo_script.md    two full-case demo script (low + high urgency), timed under 4 min
 .claude/skills/     project-scoped skills: playwright-cli, documentation-and-adrs,
@@ -330,6 +360,19 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   `AudioWorkletNode` would be the modern replacement for production).
 - Waits for server's `session_ended` ack before closing the WebSocket on stop
   (not a fixed timeout — Gemini retries can take longer than a guessed delay).
+- **Full-app i18n** (see safety-architecture item 10): a `STRINGS` table
+  (`en`/`ar`) plus `applyLanguage(lang)`, which walks every `[data-i18n]`
+  node for static/simple-dynamic text and separately re-renders the
+  handful of state-dependent pieces (status pill, mic hint/aria-label,
+  urgency badge, escalation headline) that a blind attribute walk can't
+  resolve since their text depends on in-memory state (`currentStatus`,
+  `isRecording`, `currentUrgency`, `escalationState`), not just the
+  current language. Elements created dynamically at runtime (confidence
+  prompts, critical-field labels/buttons, "None reported" placeholders)
+  are tagged with the same `data-i18n` attribute at creation time, so a
+  later language change re-translates them too without special-casing
+  each one. First-load language popup and the existing mid-session toggle
+  / voice-switch both call `applyLanguage()`.
 - Design: calm teal/off-white palette, fixed light theme (intentional for a
   clinical kiosk feel regardless of device dark-mode setting), red only for
   the escalation state.
@@ -455,6 +498,13 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   sometimes mis-transcribes synthetic English speech as Arabic-script text.
   Not a real-world concern (real patients aren't TTS output) but explains any
   odd transcripts in test logs.
+- **Full-app Arabic UI is right-to-left text, not a mirrored layout**: the
+  i18n pass (item 10) sets `dir="rtl"` on `<html>`, which correctly
+  right-aligns and reorders Arabic text, but doesn't mirror layout
+  primitives like the header's flex order or icon positions the way a
+  true RTL-aware layout would (logical CSS properties throughout). Scoped
+  this way deliberately — the ask was translating UI text/labels, not a
+  full RTL layout redesign — but worth being explicit about the boundary.
 
 ## How everything was tested (pattern to continue)
 
@@ -489,6 +539,20 @@ Every component was verified against **live APIs**, not mocked, and not just
   audio file for as long as the mic stays open (a test-harness quirk, not
   an app bug — duplicate turns from a second replay, fixed by stopping the
   mic shortly after the clip's natural duration).
+
+- The expanded follow-up question variety (duration/recurrence/severity,
+  item 9) and the three-tier Gemini→Gemini-fallback→Groq extraction
+  fallback were verified with real, non-mocked `LLMPipeline.summarize()`
+  calls — including one run where both real Gemini keys were genuinely
+  quota-exhausted from earlier testing, so the Groq tier-3 fallback fired
+  for real, not simulated, and still returned a valid, schema-matching,
+  clinically-correct response.
+- The full-app bilingual UI (item 10) was verified headlessly with
+  **jsdom** loading the actual `index.html`/`app.js` (not a rewritten
+  test harness): confirmed the popup blocks the page until a choice is
+  made, selecting a language translates the full DOM and sets
+  `lang`/`dir`, a mid-session toggle change re-translates back, and no
+  `[data-i18n]` node is left with empty text in either language.
 
 **Continue this pattern**: when changing any of these files, re-verify against
 the real API/browser, not just static review — that's how every real bug so

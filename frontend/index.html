@@ -13,26 +13,42 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to main content</a>
+  <!-- Full-app language selection — shown on first load, before anything
+       else is usable (see app.js selectLanguage()). Deliberately shows both
+       native labels regardless of any chosen language, since no language is
+       selected yet. Covers the full viewport so nothing underneath is
+       reachable until a choice is made. -->
+  <div id="langPopup" class="lang-popup" role="dialog" aria-modal="true" aria-labelledby="langPopupHeading">
+    <div class="lang-popup-card">
+      <h2 id="langPopupHeading">Choose your language / اختر لغتك</h2>
+      <p class="lang-popup-sub">Select the language you'd like to use with Sina. / اختر اللغة التي تود استخدامها مع سينا.</p>
+      <div class="lang-popup-options">
+        <button type="button" id="langPopupArabic" class="lang-popup-option" dir="rtl">العربية</button>
+        <button type="button" id="langPopupEnglish" class="lang-popup-option">English</button>
+      </div>
+    </div>
+  </div>
+
+  <a class="skip-link" href="#main" data-i18n="skipLink">Skip to main content</a>
   <header class="app-header">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"></span>
       <div>
         <h1>Sina</h1>
-        <p class="subtitle">Bilingual Clinical Intake Assistant</p>
+        <p class="subtitle" data-i18n="brandSubtitle">Bilingual Clinical Intake Assistant</p>
       </div>
     </div>
     <div class="header-right">
       <span id="latencyStat" class="latency-stat" hidden></span>
       <div class="status" id="status">
         <span class="status-dot" id="statusDot"></span>
-        <span id="statusText">Idle</span>
+        <span id="statusText" data-i18n="statusIdle">Idle</span>
       </div>
     </div>
   </header>
 
   <main id="main">
-    <p class="disclaimer">
+    <p class="disclaimer" data-i18n="disclaimer">
       Sina collects and organizes intake information. It does not diagnose
       conditions or replace emergency services. All escalations are
       reviewed by a human.
@@ -41,69 +57,69 @@
     <div id="escalationBanner" class="escalation-banner" hidden role="alert">
       <span id="escalationIcon" class="escalation-icon" aria-hidden="true">&#9888;</span>
       <div>
-        <strong id="escalationHeadline">Connecting you with a human interpreter</strong>
+        <strong id="escalationHeadline" data-i18n="escalationConnecting">Connecting you with a human interpreter</strong>
         <span id="escalationDots" class="escalation-dots" aria-hidden="true">
           <span></span><span></span><span></span>
         </span>
-        <p>This case has been flagged as high urgency and requires immediate human attention.</p>
+        <p data-i18n="escalationBody">This case has been flagged as high urgency and requires immediate human attention.</p>
       </div>
     </div>
 
     <div id="reviewBanner" class="review-banner" hidden role="status">
       <span class="review-icon" aria-hidden="true">&#128269;</span>
       <div>
-        <strong>Flagged for human review</strong>
+        <strong data-i18n="reviewHeadline">Flagged for human review</strong>
         <p id="reviewReason"></p>
       </div>
     </div>
 
     <section class="panel patient-form-panel" id="patientFormPanel">
-      <h2>Before we start</h2>
-      <p class="patient-form-hint">
+      <h2 data-i18n="patientFormHeading">Before we start</h2>
+      <p class="patient-form-hint" data-i18n="patientFormHint">
         Just a few details to personalize the conversation — all clinical
         information (symptoms, medications, allergies) is collected by
         voice only, not here.
       </p>
       <form id="patientForm">
         <label class="patient-form-field">
-          <span>Name</span>
+          <span data-i18n="fieldName">Name</span>
           <input type="text" id="patientName" name="name" required autocomplete="name" />
         </label>
         <label class="patient-form-field">
-          <span>Age</span>
+          <span data-i18n="fieldAge">Age</span>
           <input type="text" id="patientAge" name="age" required autocomplete="off" inputmode="numeric" />
         </label>
         <label class="patient-form-field">
-          <span>Occupation</span>
+          <span data-i18n="fieldOccupation">Occupation</span>
           <input type="text" id="patientOccupation" name="occupation" autocomplete="organization-title" />
         </label>
-        <button type="submit" class="patient-form-submit">Continue</button>
+        <button type="submit" class="patient-form-submit" data-i18n="continueButton">Continue</button>
       </form>
     </section>
 
     <section class="panel mic-panel" id="micPanel" hidden>
       <fieldset class="lang-toggle" id="langToggle">
-        <legend>Listening language</legend>
+        <legend data-i18n="listeningLanguageLegend">Listening language</legend>
         <label class="lang-toggle-option">
           <input type="radio" name="langMode" value="ar" checked />
-          <span>Arabic</span>
+          <span data-i18n="langNameAr">Arabic</span>
         </label>
         <label class="lang-toggle-option">
           <input type="radio" name="langMode" value="en" />
-          <span>English</span>
+          <span data-i18n="langNameEn">English</span>
         </label>
       </fieldset>
 
       <button id="micButton" class="mic-button" type="button" aria-pressed="false" aria-label="Start speaking with Sina">
         <span class="mic-icon" aria-hidden="true"></span>
       </button>
-      <p class="mic-hint" id="micHint">Tap to begin speaking with Sina</p>
+      <p class="mic-hint" id="micHint" data-i18n="micHintIdle">Tap to begin speaking with Sina</p>
     </section>
 
     <section class="panel transcript-panel">
-      <h2>Transcript</h2>
+      <h2 data-i18n="transcriptHeading">Transcript</h2>
       <div id="transcriptLog" class="transcript-log" aria-live="polite">
-        <p class="transcript-placeholder" id="transcriptPlaceholder">
+        <p class="transcript-placeholder" id="transcriptPlaceholder" data-i18n="transcriptPlaceholder">
           Your conversation will appear here as you speak, in English or Arabic.
         </p>
       </div>
@@ -112,10 +128,10 @@
 
     <section class="panel summary-panel" id="summaryPanel" hidden>
       <div class="summary-header">
-        <h2>Intake Summary</h2>
+        <h2 data-i18n="summaryHeading">Intake Summary</h2>
         <div class="summary-header-actions">
-          <span id="urgencyBadge" class="urgency-badge urgency-low">low</span>
-          <button type="button" id="exportPdfButton" class="export-pdf-button">Export as PDF</button>
+          <span id="urgencyBadge" class="urgency-badge urgency-low" data-i18n="urgencyLow">low</span>
+          <button type="button" id="exportPdfButton" class="export-pdf-button" data-i18n="exportPdf">Export as PDF</button>
         </div>
       </div>
 
@@ -123,33 +139,33 @@
 
       <div class="summary-grid">
         <div class="summary-field">
-          <h3>Symptoms</h3>
+          <h3 data-i18n="symptomsHeading">Symptoms</h3>
           <ul id="symptomsList" class="summary-list"></ul>
         </div>
         <div class="summary-field">
-          <h3>Medications</h3>
+          <h3 data-i18n="medicationsHeading">Medications</h3>
           <ul id="medicationsList" class="summary-list"></ul>
         </div>
         <div class="summary-field">
-          <h3>Allergies</h3>
+          <h3 data-i18n="allergiesHeading">Allergies</h3>
           <ul id="allergiesList" class="summary-list"></ul>
         </div>
       </div>
 
       <div id="redFlagsSection" class="red-flags-section" hidden>
-        <h3>Red Flags</h3>
+        <h3 data-i18n="redFlagsHeading">Red Flags</h3>
         <ul id="redFlagsList" class="summary-list red-flags-list"></ul>
       </div>
 
       <div id="clinicalNotesSection" class="clinical-notes-section" hidden>
-        <h3>Clinical Notes</h3>
-        <p class="clinical-notes-caveat">AI-generated cross-references for clinician review — not a diagnosis.</p>
+        <h3 data-i18n="clinicalNotesHeading">Clinical Notes</h3>
+        <p class="clinical-notes-caveat" data-i18n="clinicalNotesCaveat">AI-generated cross-references for clinician review — not a diagnosis.</p>
         <ul id="clinicalNotesList" class="summary-list clinical-notes-list"></ul>
       </div>
 
       <div id="criticalFieldsSection" class="critical-fields-section" hidden>
-        <h3>Transcript Integrity — Critical Fields</h3>
-        <p class="critical-fields-caveat">
+        <h3 data-i18n="criticalFieldsHeading">Transcript Integrity — Critical Fields</h3>
+        <p class="critical-fields-caveat" data-i18n="criticalFieldsCaveat">
           What was said, what Sina extracted, and whether it's confirmed —
           for clinician audit, not just the extracted values above.
         </p>
