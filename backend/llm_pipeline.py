@@ -723,19 +723,21 @@ class LLMPipeline:
         return IntakeSummary.model_validate_json(content)
 
     async def _try_groq(self, contents: str) -> IntakeSummary:
-        """Tier 3: only reached once both Gemini keys are unavailable.
+        """Tier 2 (final fallback): only reached once the Gemini key is
+        unavailable.
 
         Latency fix: a 429 here means Groq's own rate/quota limit is hit —
-        that will not clear in the space of a ~0.6s backoff, so retrying it
-        just burns time before falling through to the next tier for no
-        benefit (confirmed live: a real quota-exhaustion outage kept 429ing
-        on every retry). Only a transient 5xx is worth one quick retry;
-        a 429 fails fast straight to OpenRouter instead."""
+        that will not clear in the space of a short backoff, so retrying it
+        just burns time for no benefit (confirmed live: a real
+        quota-exhaustion outage kept 429ing on every retry). Only a
+        transient 5xx is worth one quick retry; a 429 fails fast instead.
+        With MAX_RETRIES=1 (see constant) there is no retry at all in
+        practice — this only matters if that's raised again later."""
         last_error: Optional[Exception] = None
         for attempt in range(MAX_RETRIES):
             try:
                 summary = await self._call_groq(contents)
-                logger.warning("Groq fallback (tier 3) succeeded.")
+                logger.warning("Groq fallback succeeded.")
                 self._last_served_by = "groq"
                 return summary
             except httpx.HTTPStatusError as e:

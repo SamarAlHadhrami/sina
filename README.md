@@ -28,8 +28,9 @@ video.
   API. Full bilingual UI (see below) — not just the AI's own replies.
 
 All API keys live in `.env` (gitignored): `ASSEMBLYAI_API_KEY`,
-`GEMINI_API_KEY`, `GEMINI_API_KEY_FALLBACK` (optional), `GROQ_API_KEY`
-(optional), `ELEVENLABS_API_KEY`, `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`.
+`GEMINI_API_KEY`, `GROQ_API_KEY` (optional fallback),
+`ELEVENLABS_API_KEY` (unused reference/fallback — see `tts_client.py`),
+`AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`.
 
 ## Safety architecture (core narrative)
 
@@ -53,13 +54,20 @@ it does not get the final word on whether something is dangerous.
    silently guessing when the audio was ambiguous. If any critical field is
    unresolved, `needs_human_review` is set — a data-quality signal, kept
    separate from urgency, since a calm conversation with a mumbled drug name
-   isn't an emergency but does need a human to check it. Gemini gets exactly
+   isn't an emergency but does need a human to check it. Gemini could get
    one re-check before this is accepted as final (bounded — each retry is a
-   real, scarce Gemini request, not a loop).
+   real, scarce Gemini request, not a loop); **currently disabled** as a
+   demo-speed tradeoff (see `llm_pipeline.py`'s `summarize()` — commented
+   out, not deleted) since it doubled latency on exactly the turns patients
+   noticed most (medication names). The first-pass result is trusted as-is
+   for now.
 3. **Transcript integrity layer.** Each critical field carries what was
-   said, what was extracted, and its confirm/correct status — surfaced in
-   the UI with tap-to-fix (not voice-only correction, which would compound
-   an error already caused by mishearing) and included in the PDF export.
+   said, what was extracted, and its confirm/correct status. The data still
+   arrives in every `summary.critical_fields` payload, but the section is
+   **no longer shown in the default patient-facing summary UI** (removed by
+   request — see `renderSummary()` in `app.js`); the tap-to-fix rendering
+   code (`renderCriticalFields()`) is left in place, unused, in case this is
+   wanted again for a clinician-facing/internal view.
 4. **AssemblyAI Medical Mode + keyterms.** `domain=medical` is enabled on
    the streaming connection — confirmed real and available on this account's
    tier by checking the `Begin` message's `configuration.domain` echo
@@ -111,20 +119,16 @@ it does not get the final word on whether something is dangerous.
    recurrence or severity once those three are covered. `agent_reply` is
    generated and spoken the same way regardless of urgency — see item 11
    below for how escalation now interacts with closing instead of muting
-   this. A second Gemini
-   API key can be set as `GEMINI_API_KEY_FALLBACK` in `.env`; on a 429
-   (either the per-minute or daily cap), one attempt (with its own 503
-   retry-with-backoff) is made with it before giving up, logged clearly
-   either way. If BOTH Gemini keys are unavailable — quota exhausted or
-   repeated 503s after their retry budgets — extraction falls through to a
-   third tier, Groq (`GROQ_API_KEY`, optional), calling `openai/gpt-oss-120b`
-   with the identical Pydantic schema via OpenAI-compatible strict structured
-   outputs. This is purely testing headroom (Groq's free tier is 30 req/min
-   / 1000 req/day, well above Gemini's), not a preferred provider — Gemini
-   is always tried first. Each `IntakeResult` carries a `served_by` field
-   (`gemini_primary` / `gemini_fallback` / `groq`) and every tier transition
-   is logged, so it's always clear which provider actually answered a given
-   turn during testing.
+   this. If Gemini is unavailable (quota exhausted, or repeated 503s after
+   its retry budget), extraction falls through to a fallback tier, Groq
+   (`GROQ_API_KEY`, optional), calling `openai/gpt-oss-120b` with the
+   identical Pydantic schema via OpenAI-compatible strict structured
+   outputs. Not a preferred provider — Gemini is always tried first. Each
+   `IntakeResult` carries a `served_by` field (`gemini_primary` / `groq`)
+   and every tier transition is logged, so it's always clear which provider
+   actually answered a given turn during testing. (A second Gemini key and
+   an OpenRouter third tier were added and later removed again, by request,
+   to keep the chain simple and fast — see `llm_pipeline.py`.)
 10. **Full-app bilingual UI, not just the AI's own replies.** Before
     anything else loads, a full-screen popup asks "Choose your language /
     اختر لغتك" — both native labels shown together since no language is
@@ -188,14 +192,15 @@ it does not get the final word on whether something is dangerous.
     Under the hood, any turn needing confirmation is held server-side
     (`SinaSession._pending_turns`, keyed by turn_order) and is **not** fed
     to the LLM pipeline until resolved: "Yes" sends `confirm_turn` (feeds
-    the original text), "No" opens an editable correction field — reusing
-    the critical-fields tap-to-fix pattern — whose "Save correction" sends
-    `correct_turn` with the edited text (the disputed original never
-    reaches Gemini), or "Discard" sends `discard_turn` (dropped outright).
+    the original text, no visual change to the line) and "No" sends
+    `discard_turn` — the line is removed from the transcript entirely and
+    the disputed text never reaches Gemini. (An earlier version of "No"
+    opened an editable correction field instead of removing the line —
+    simplified to remove-only by request; `correct_turn` still exists
+    server-side for compatibility but the frontend no longer sends it.)
     Verified in-process with a real `SinaSession`: a garbled low-confidence
     turn is held back (`session.llm._final_lines` stays empty), and after
-    `correct_turn`, the LLM pipeline's transcript contains exactly the
-    corrected text, never the original.
+    `discard_turn`, it never reaches the LLM pipeline at all.
 14. **Arabic-mode English-leakage re-investigation.** Re-examined per a bug
     report that Arabic sessions still intermittently transcribed bursts of
     English despite the existing single-element `language_codes=["ar"]`
@@ -350,15 +355,18 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   outputs require but pydantic doesn't emit by default — confirmed live via
   a 400 asking for exactly that) and OpenAI-compatible strict `json_schema`
   response format, so the output is exactly `IntakeSummary`, just like
-  Gemini's `response_schema`. Verified live end-to-end: while both real
-  Gemini keys were quota-exhausted from earlier testing, a real `summarize()`
+  Gemini's `response_schema`. Verified live end-to-end: while the real
+  Gemini key was quota-exhausted from earlier testing, a real `summarize()`
   call correctly fell through to Groq and returned a valid, schema-matching,
-  clinically-correct response. Purely a testing-headroom safety net (Groq's
+  clinically-correct response. Purely a fallback safety net (Groq's
   free tier: 30 req/min, 1000 req/day) — Gemini is always tried first.
-- **Debounce** (`DEBOUNCE_SECONDS = 13.0`, i.e. 5/min limit's 12s minimum +
-  1s margin): completed STT turns don't call Gemini directly — they're
-  coalesced. First call fires immediately; subsequent turns within the window
-  schedule exactly one delayed call for when the window reopens.
+- **Debounce** (`DEBOUNCE_SECONDS = 5.0` as of this demo pass — was `13.0`,
+  i.e. 5/min limit's 12s minimum + 1s margin; shortened deliberately for
+  demo responsiveness, see `llm_pipeline.py` comment — bump back up
+  post-demo if sustained conversations should stay on Gemini rather than
+  shifting load to Groq): completed STT turns don't call Gemini directly —
+  they're coalesced. First call fires immediately; subsequent turns within
+  the window schedule exactly one delayed call for when the window reopens.
   `flush()` forces an immediate final call (used at session end).
   **Trade-off**: high-urgency detection can lag up to ~13s since urgency is
   only known after Gemini responds. Documented in code; worth mentioning in demo.

@@ -232,8 +232,8 @@ def _detect_language_tag(text: str) -> Optional[str]:
     return None
 
 class SinaSession:
-    """Wires one patient's STTClient -> LLMPipeline -> TTS (ElevenLabs for
-    English, Azure for Arabic) together for
+    """Wires one patient's STTClient -> LLMPipeline -> TTS (Azure Speech for
+    both English and Arabic, one voice per language) together for
     the lifetime of a single WebSocket connection."""
 
     def __init__(
@@ -249,9 +249,9 @@ class SinaSession:
         # Switched English to Azure too, to reduce dependency on
         # ElevenLabs' more limited free-tier quota now that Azure was
         # already integrated — confirmed comparable voice quality live
-        # before switching. TTSClient (ElevenLabs) is left importable and
-        # unused here as reference/fallback, not routed to by default
-        # anymore. Picked per-call by _current_tts() rather than at
+        # before switching. tts_client.py (ElevenLabs) still exists in the
+        # repo as reference/fallback but is no longer imported here.
+        # Picked per-call by _current_tts() rather than at
         # construction, since a mid-session language switch must also
         # switch which voice speaks.
         self.tts_en = AzureTTSClient(AZURE_VOICE_NAME_EN)
