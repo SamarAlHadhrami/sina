@@ -4,3 +4,4 @@ websockets
 python-dotenv
 google-genai
 elevenlabs
+httpx

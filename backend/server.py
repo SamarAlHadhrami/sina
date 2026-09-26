@@ -15,7 +15,12 @@ patient session:
                                         v                     v
                                  send JSON summary     send JSON escalation
                                  to frontend           + spoken TTS notice
-                                                        (TTSClient / ElevenLabs)
+                                                        (English: TTSClient/
+                                                        ElevenLabs. Arabic:
+                                                        AzureTTSClient —
+                                                        ElevenLabs has no
+                                                        free-tier Arabic
+                                                        voice.)
 
 Protocol (single WebSocket at /ws/session?lang=ar|en — one is required in
 spirit; an omitted/invalid value defaults to "ar" rather than bilingual):
@@ -81,6 +86,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from azure_tts_client import AzureTTSClient
 from llm_pipeline import IntakeResult, LLMPipeline, PatientInfo
 from stt_client import STTClient
 from tts_client import TTSClient
@@ -101,11 +107,14 @@ async def root() -> RedirectResponse:
     return RedirectResponse(url="/static/")
 
 # Spoken notice when a session is escalated to a human interpreter. Kept
-# short and calm; read with the same TTSClient defaults (Sarah, slowed +
-# stabilized) used everywhere else in the app.
-ESCALATION_MESSAGE = (
+# short and calm. Two versions since escalation must be spoken in whichever
+# language is currently active (see _current_tts()) — playing the English
+# line through the Arabic voice, or vice versa, would come out mispronounced
+# rather than just accented.
+ESCALATION_MESSAGE_EN = (
     "I'm connecting you with a human interpreter now. Please hold on for a moment."
 )
+ESCALATION_MESSAGE_AR = "سأقوم بتوصيلك بمترجم بشري الآن. يرجى الانتظار للحظة."
 
 # Below this average per-word confidence, a final turn is flagged to the
 # frontend as uncertain so it can show a "did I hear that right?" prompt
@@ -164,7 +173,8 @@ def _detect_language_tag(text: str) -> Optional[str]:
     return None
 
 class SinaSession:
-    """Wires one patient's STTClient -> LLMPipeline -> TTSClient together for
+    """Wires one patient's STTClient -> LLMPipeline -> TTS (ElevenLabs for
+    English, Azure for Arabic) together for
     the lifetime of a single WebSocket connection."""
 
     def __init__(
@@ -174,7 +184,13 @@ class SinaSession:
         patient_info: Optional[PatientInfo] = None,
     ) -> None:
         self.ws = websocket
-        self.tts = TTSClient()
+        # English -> ElevenLabs (Sarah); Arabic -> Azure Speech (Omani
+        # neural voice) — ElevenLabs has no free-tier Arabic voice (see
+        # README Known Limitations), Azure does. Picked per-call by
+        # _current_tts() rather than at construction, since a mid-session
+        # language switch must also switch which TTS provider speaks.
+        self.tts_en = TTSClient()
+        self.tts_ar = AzureTTSClient()
         self._current_lang = language_codes[0] if language_codes else "ar"
         # One LLMPipeline for the whole session lifetime, deliberately
         # untouched by a language switch below — it accumulates plain text
@@ -334,15 +350,16 @@ class SinaSession:
         # that separately.
         if not result.escalate_to_interpreter and result.summary.agent_reply:
             try:
-                audio = await self.tts.synthesize(result.summary.agent_reply)
+                audio = await self._current_tts().synthesize(result.summary.agent_reply)
                 await self._send_audio(audio, context="agent_reply")
             except Exception:
                 logger.exception("Failed to synthesize agent_reply")
 
     async def _send_escalation(self, result: IntakeResult) -> None:
         await self._send_json({"type": "escalation", "red_flags": result.summary.red_flags})
+        message = ESCALATION_MESSAGE_AR if self._current_lang == "ar" else ESCALATION_MESSAGE_EN
         try:
-            audio = await self.tts.synthesize(ESCALATION_MESSAGE)
+            audio = await self._current_tts().synthesize(message)
             await self._send_audio(audio, context="escalation")
         except Exception:
             logger.exception("Failed to synthesize escalation notice")
@@ -357,7 +374,7 @@ class SinaSession:
             if not text:
                 return
             try:
-                audio = await self.tts.synthesize(text)
+                audio = await self._current_tts().synthesize(text)
                 await self._send_audio(audio, context="speak")
             except Exception:
                 logger.exception("TTS synthesis failed")
@@ -394,6 +411,12 @@ class SinaSession:
             logger.warning("Unknown client message type: %r", msg_type)
 
     # ---- helpers -------------------------------------------------------------
+
+    def _current_tts(self):
+        """Whichever TTS provider matches the currently active language —
+        re-evaluated per call (not cached) so a mid-session language switch
+        immediately speaks through the right voice/provider."""
+        return self.tts_ar if self._current_lang == "ar" else self.tts_en
 
     async def _send_json(self, payload: dict) -> None:
         async with self._send_lock:

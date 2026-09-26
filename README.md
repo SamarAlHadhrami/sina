@@ -19,13 +19,16 @@ video.
 - **LLM**: Gemini Flash (`gemini-3.6-flash`) — structured JSON extraction via
   Pydantic `response_schema`, plus a deterministic keyword layer that Gemini
   cannot override (see below).
-- **TTS**: ElevenLabs (`eleven_flash_v2_5`, voice "Sarah") — free tier only (see
-  Known Limitations).
+- **TTS**: dual-provider by language — ElevenLabs (`eleven_flash_v2_5`,
+  voice "Sarah") for English; Azure Speech (`ar-OM-AyshaNeural`, Omani
+  Arabic neural voice) for Arabic, since ElevenLabs has no Arabic voice on
+  the free tier (see Known Limitations).
 - **Backend**: FastAPI, one WebSocket per session at `/ws/session`.
 - **Frontend**: plain HTML/CSS/JS, no framework. Mic capture via Web Audio API.
 
 All API keys live in `.env` (gitignored): `ASSEMBLYAI_API_KEY`,
-`GEMINI_API_KEY`, `ELEVENLABS_API_KEY`.
+`GEMINI_API_KEY`, `GEMINI_API_KEY_FALLBACK` (optional), `ELEVENLABS_API_KEY`,
+`AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`.
 
 ## Safety architecture (core narrative)
 
@@ -109,7 +112,8 @@ it does not get the final word on whether something is dangerous.
 backend/
   stt_client.py     STTClient — AssemblyAI websocket wrapper
   llm_pipeline.py   LLMPipeline — Gemini structured extraction + debounce + escalation rule
-  tts_client.py     TTSClient — ElevenLabs wrapper, calm voice settings
+  tts_client.py     TTSClient — ElevenLabs wrapper (English), calm voice settings
+  azure_tts_client.py  AzureTTSClient — Azure Speech wrapper (Arabic), native Omani voice
   server.py         FastAPI app, SinaSession, wires the three together over /ws/session
   requirements.txt
 frontend/
@@ -238,14 +242,40 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   request to sound calmer/slower for a clinical context.
 - Handles mixed Arabic/English text in **one call**, no per-segment splitting
   needed — verified live.
-- A short spoken confirmation ("Got it, I've noted that down.") now plays
-  after every non-escalation summary — TTS was previously wired only for
-  the escalation notice and on-demand `speak` requests, so a normal turn
-  produced no spoken reply at all. Confirmed by ear.
+- Used for **English sessions only** now (see `azure_tts_client.py` below) —
+  previously also handled Arabic, but with no free-tier-accessible Arabic
+  voice, that meant every Arabic session was spoken in an English accent.
+
+### `azure_tts_client.py`
+- **Arabic sessions** use this instead of ElevenLabs — added because
+  ElevenLabs genuinely has no Arabic voice on the free tier. Confirmed
+  definitively (not just a 402 on one voice_id): every account voice has a
+  `category` field, and all 21 free (`"premade"`) voices are English; the
+  only Arabic voice is `category: "professional"` — ElevenLabs' paid
+  library tier, exactly what 402s for free accounts.
+- Voice: `ar-OM-AyshaNeural`, Azure's Omani Arabic neural voice — confirmed
+  live against the real API (`voices/list` endpoint) alongside
+  `ar-OM-AbdullahNeural` (male); Aysha chosen for tonal parity with the
+  English side's "Sarah," easy to swap via `AZURE_VOICE_NAME`.
+- REST endpoint via `httpx`, not the `azure-cognitiveservices-speech` SDK —
+  that SDK also bundles a full speech-*recognition* stack (native
+  binaries, audio-device handling) for a feature we don't need; the REST
+  TTS endpoint is one documented POST with an SSML body.
+- `server.py`'s `_current_tts()` picks the provider per call based on the
+  session's active language, re-evaluated every time (not cached at
+  construction) — so a mid-session language switch immediately routes
+  subsequent speech to the right provider, verified through the real
+  `switch_language()` mechanism, not just by flipping the language
+  attribute directly.
+- The escalation notice needed an Arabic translation
+  (`ESCALATION_MESSAGE_AR`) for the same reason as the agent_reply
+  language-matching rule elsewhere: playing the English escalation line
+  through the Arabic voice would come out mispronounced, not just accented.
 
 ### `server.py`
 - `SinaSession` class = one instance per WebSocket connection, owns one
-  `STTClient` + `LLMPipeline` + `TTSClient`.
+  `STTClient` + `LLMPipeline` + two TTS clients (`tts_en`/`tts_ar`),
+  selected per call via `_current_tts()`.
 - WebSocket protocol documented in the file's docstring — binary frames for
   mic audio in; JSON text frames both ways (`transcript`, `summary`,
   `escalation`, `audio`, `session_ended`, `error` from server; `speak`, `end`
@@ -379,24 +409,21 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   Architecture above — phone/email/DOB are reliable, name/address are
   pattern-matched against common self-introduction phrasing only, not a
   general detector.
-- **ElevenLabs free tier**: no library/community voices available via API
-  (`402 payment_required` on any non-default voice_id — confirmed live, even
-  for a voice already saved to the account). So Sina uses "Sarah" (US-accented)
-  for **both** Arabic and English — no native-sounding Arabic voice without a
-  paid plan (~$6/mo Starter would unlock it; user declined due to budget).
-  Investigated Google Cloud TTS as a free alternative — it does have native
-  Arabic voices and a real recurring free quota (4M chars/mo standard, 1M
-  WaveNet), but requires a GCP billing account (card on file) to enable the
-  API at all, so it doesn't avoid the "add a payment method" issue either.
-  **Decision: stay on ElevenLabs free tier, disclose this limitation in demo.**
-  Re-verified definitively via `voices.get_all()`'s `category` field, not
-  just a 402 on one voice_id: all 21 free-tier voices in this account are
-  `category: "premade"` and every one is `language: "en"`; the only
-  Arabic-labeled voice ("Wiam") is `category: "professional"` — ElevenLabs'
-  paid/library tier, exactly what 402s for free accounts. No free Arabic
-  voice exists in this account, full stop — not a guess, a direct read of
-  the category field. Confirmed with `eleven_flash_v2_5` (the model already
-  in use, which does support Arabic output regardless of voice accent).
+- **RESOLVED — ElevenLabs free tier has no Arabic voice**: no library/
+  community voices available via API (`402 payment_required` on any
+  non-default voice_id). Re-verified definitively via `voices.get_all()`'s
+  `category` field, not just a 402 on one voice_id: all 21 free-tier voices
+  in this account are `category: "premade"` and every one is
+  `language: "en"`; the only Arabic-labeled voice ("Wiam") is
+  `category: "professional"` — ElevenLabs' paid/library tier. No free
+  Arabic voice exists in this ElevenLabs account, full stop. Investigated
+  Google Cloud TTS as a free alternative first — it does have native
+  Arabic voices, but requires a GCP billing account (card on file) to
+  enable the API at all, same "add a payment method" problem.
+  **Fixed by switching Arabic TTS to Azure Speech Services**
+  (`azure_tts_client.py`, `ar-OM-AyshaNeural`) — a genuinely free-tier-
+  usable native Arabic voice, confirmed live. English stays on ElevenLabs/
+  Sarah, unaffected. See the `azure_tts_client.py` section above.
 - **Gemini free tier**: 5 requests/minute, addressed via debounce (see above).
   Trade-off: escalation detection can lag ~13s behind the actual utterance.
 - **STT→TTS round-trip artifact**: when testing by feeding synthesized TTS
