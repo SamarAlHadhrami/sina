@@ -12,8 +12,6 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-      - key: GEMINI_API_KEY_FALLBACK
-        sync: false
       - key: ELEVENLABS_API_KEY
         sync: false
       - key: AZURE_SPEECH_KEY
@@ -21,6 +19,4 @@ services:
       - key: AZURE_SPEECH_REGION
         sync: false
       - key: GROQ_API_KEY
-        sync: false
-      - key: OPENROUTER_API_KEY
         sync: false
