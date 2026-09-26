@@ -132,12 +132,18 @@
 
     <section class="panel transcript-panel">
       <h2 data-i18n="transcriptHeading">Transcript</h2>
+      <!-- Newest-on-top (item 5): the in-progress partial line sits above
+           the log now, since it's about to become the newest (topmost)
+           turn once finalized — matches the log's own newest-first order. -->
+      <p id="partialLine" class="partial-line" dir="auto"></p>
       <div id="transcriptLog" class="transcript-log" aria-live="polite">
         <p class="transcript-placeholder" id="transcriptPlaceholder" data-i18n="transcriptPlaceholder">
           Your conversation will appear here as you speak, in English or Arabic.
         </p>
       </div>
-      <p id="partialLine" class="partial-line" dir="auto"></p>
+      <button type="button" id="transcriptToggle" class="transcript-toggle" hidden data-i18n="showMore">
+        Show more
+      </button>
     </section>
 
     <section class="panel summary-panel" id="summaryPanel" hidden>

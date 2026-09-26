@@ -57,10 +57,19 @@ GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Flash occasionally returns a transient 503 "high demand" ServerError even on
-# a valid request (confirmed empirically); retry a couple of times with
-# backoff before giving up.
-MAX_RETRIES = 3
-RETRY_BACKOFF_SECONDS = 2.0
+# a valid request (confirmed empirically); retry briefly before giving up on
+# this tier and moving to the next one (fallback key, then Groq).
+#
+# Latency fix: this used to be 3 attempts with 2s/4s exponential backoff —
+# up to ~6s of pure sleep PER TIER before falling through, on top of the
+# actual (failing) API calls themselves. For a chained failure (primary ->
+# fallback -> Groq) that could add up to 15-20+ seconds before a reply ever
+# reached the patient. Tightened to 2 attempts (one retry) with a flat,
+# short backoff — a few seconds total per tier, not per-attempt — since the
+# point of retrying at all is to absorb a genuinely transient blip, not to
+# patiently wait out a real outage while the conversation stalls.
+MAX_RETRIES = 2
+RETRY_BACKOFF_SECONDS = 0.6
 
 
 def _is_quota_error(e: genai_errors.ClientError) -> bool:
@@ -667,6 +676,12 @@ class LLMPipeline:
                 system_instruction=SYSTEM_PROMPT,
                 response_mime_type="application/json",
                 response_schema=IntakeSummary,
+                # Latency fix: caps worst-case generation time. Typical
+                # output for this schema is well under half this; the cap
+                # only bites on a pathological runaway (e.g. clinical_notes
+                # rambling), trading a rare truncated-JSON retry for a much
+                # better normal-case tail latency.
+                max_output_tokens=1024,
             ),
         )
 

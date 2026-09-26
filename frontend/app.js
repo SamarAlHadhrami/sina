@@ -28,6 +28,7 @@
       skipLink: "Skip to main content",
       statusIdle: "Idle",
       statusListening: "Listening",
+      statusPaused: "Paused — tap mic to resume",
       statusConnecting: "Connecting…",
       statusFinishing: "Finishing up…",
       statusError: "Something went wrong",
@@ -94,9 +95,8 @@
       urgencyHigh: "high",
       confidenceNo: "No",
       languageMismatchPrompt: "This looks like it may have come out in the wrong language.",
-      correctionPlaceholder: "Type what was actually said…",
-      correctionSave: "Save correction",
-      correctionRetry: "Discard — I'll repeat it",
+      showMore: "Show more",
+      showLess: "Show less",
       startNewSession: "Start New Session",
       statusSessionComplete: "Session complete",
       statusSessionEscalated: "Session complete — escalated to interpreter",
@@ -107,6 +107,7 @@
       skipLink: "الانتقال إلى المحتوى الرئيسي",
       statusIdle: "خامل",
       statusListening: "يستمع",
+      statusPaused: "متوقف مؤقتًا — اضغط للمتابعة",
       statusConnecting: "جارٍ الاتصال…",
       statusFinishing: "جارٍ الإنهاء…",
       statusError: "حدث خطأ ما",
@@ -171,9 +172,8 @@
       urgencyHigh: "عالية",
       confidenceNo: "لا",
       languageMismatchPrompt: "يبدو أن هذا ظهر باللغة الخاطئة.",
-      correctionPlaceholder: "اكتب ما قيل فعليًا…",
-      correctionSave: "حفظ التصحيح",
-      correctionRetry: "تجاهل — سأعيد قولها",
+      showMore: "عرض المزيد",
+      showLess: "عرض أقل",
       startNewSession: "بدء جلسة جديدة",
       statusSessionComplete: "انتهت الجلسة",
       statusSessionEscalated: "انتهت الجلسة — تم التصعيد إلى مترجم",
@@ -206,6 +206,7 @@
     statusText: document.getElementById("statusText"),
     transcriptLog: document.getElementById("transcriptLog"),
     transcriptPlaceholder: document.getElementById("transcriptPlaceholder"),
+    transcriptToggle: document.getElementById("transcriptToggle"),
     partialLine: document.getElementById("partialLine"),
     escalationBanner: document.getElementById("escalationBanner"),
     escalationHeadline: document.getElementById("escalationHeadline"),
@@ -363,67 +364,14 @@
     }
   }
 
-  // Replaces the Yes/No prompt with an editable correction field (turn-confirmation fix),
-  // reusing the same tap-to-fix shape as the critical-fields section.
-  // "Save correction" sends the EDITED text as correct_turn — the original
-  // disputed recognition never reaches Gemini, only what the patient
-  // confirms is actually correct. "Discard" sends discard_turn instead —
-  // the turn is dropped outright, never becomes clinical content, and the
-  // patient is expected to just repeat themselves into the still-open mic.
-  function showCorrectionUI(wrapperEl, prompt, turnOrder, currentText) {
-    prompt.innerHTML = "";
-
-    const input = document.createElement("textarea");
-    input.className = "confidence-correction-input";
-    input.value = currentText || "";
-    input.placeholder = t("correctionPlaceholder");
-
-    const actions = document.createElement("div");
-    actions.className = "confidence-actions";
-
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.className = "confidence-dismiss";
-    saveBtn.textContent = t("correctionSave");
-    saveBtn.dataset.i18n = "correctionSave";
-    saveBtn.addEventListener("click", () => {
-      const corrected = input.value.trim();
-      if (!corrected) return;
-      if (ws && ws.readyState === WebSocket.OPEN && turnOrder !== undefined && turnOrder !== null) {
-        ws.send(JSON.stringify({ type: "correct_turn", turn_order: turnOrder, text: corrected }));
-      }
-      const lineEl = wrapperEl.querySelector(".transcript-line");
-      if (lineEl) lineEl.textContent = corrected;
-      wrapperEl.classList.remove("transcript-item-disputed");
-      wrapperEl.classList.add("transcript-item-corrected");
-      prompt.hidden = true;
-    });
-
-    const retryBtn = document.createElement("button");
-    retryBtn.type = "button";
-    retryBtn.className = "confidence-no";
-    retryBtn.textContent = t("correctionRetry");
-    retryBtn.dataset.i18n = "correctionRetry";
-    retryBtn.addEventListener("click", () => {
-      sendPendingTurnAction("discard_turn", turnOrder);
-      wrapperEl.classList.add("transcript-item-discarded");
-      prompt.hidden = true;
-    });
-
-    actions.appendChild(saveBtn);
-    actions.appendChild(retryBtn);
-    prompt.appendChild(input);
-    prompt.appendChild(actions);
-  }
-
   // needsConfirmation = low_confidence OR language_mismatch (see
-  // server.py's _on_stt_turn) — either way, this turn is being held back
-  // server-side until the patient resolves it here (turn-confirmation / language-leak
-  // fix): Yes accepts
-  // it as-is, No opens the correction UI above. languageMismatch only
-  // changes which prompt label is shown (the language-leak safeguard's honest framing: this
-  // looks like it may have leaked into the wrong language, not just "did I
-  // mishear you").
+  // server.py's _on_stt_turn) — either way, this turn is held back
+  // server-side until the patient resolves it here: "Yes" accepts it as-is
+  // (confirm_turn); "No" removes the line entirely from the display and
+  // sends discard_turn so it's dropped server-side too, never reaching the
+  // LLM — no correction popup, no editing, nothing else. languageMismatch
+  // only changes which prompt label is shown (this looks like it may have
+  // leaked into the wrong language, not just "did I mishear you").
   function setConfidencePrompt(wrapperEl, needsConfirmation, turnOrder, currentText, languageMismatch) {
     let prompt = wrapperEl.querySelector(".confidence-prompt");
     if (!needsConfirmation) {
@@ -448,9 +396,10 @@
       yesBtn.textContent = t("confidenceDismiss");
       yesBtn.dataset.i18n = "confidenceDismiss";
       yesBtn.addEventListener("click", () => {
+        // Keeps the line exactly as-is — just accepts it and dismisses
+        // the prompt, no visual change to the transcript line itself.
         sendPendingTurnAction("confirm_turn", turnOrder);
         prompt.hidden = true;
-        wrapperEl.classList.add("transcript-item-confirmed");
       });
 
       const noBtn = document.createElement("button");
@@ -459,7 +408,12 @@
       noBtn.textContent = t("confidenceNo");
       noBtn.dataset.i18n = "confidenceNo";
       noBtn.addEventListener("click", () => {
-        showCorrectionUI(wrapperEl, prompt, turnOrder, currentText);
+        sendPendingTurnAction("discard_turn", turnOrder);
+        wrapperEl.remove();
+        if (el.transcriptLog.querySelectorAll(".transcript-item").length === 0) {
+          el.transcriptPlaceholder.hidden = false;
+        }
+        updateTranscriptCollapse();
       });
 
       actions.appendChild(yesBtn);
@@ -508,7 +462,6 @@
       existing.querySelector(".transcript-line").textContent = text;
       setConfidencePrompt(existing, needsConfirmation, turnOrder, text, languageMismatch);
       setLanguageBadge(existing, languageTag);
-      existing.scrollIntoView({ behavior: "smooth", block: "end" });
       return;
     }
 
@@ -524,13 +477,39 @@
     p.textContent = text;
     wrapper.appendChild(p);
 
-    el.transcriptLog.appendChild(wrapper);
+    // Newest-on-top (item 5): prepend rather than append. insertBefore's
+    // second arg defaults the insertion point to firstChild when null is
+    // passed as the reference — but the placeholder node may be first, so
+    // insert explicitly before whatever's currently first instead.
+    el.transcriptLog.insertBefore(wrapper, el.transcriptLog.firstChild);
     setLanguageBadge(wrapper, languageTag);
     setConfidencePrompt(wrapper, needsConfirmation, turnOrder, text, languageMismatch);
-    // The log grows with the page now (no nested scroll container), so
-    // bring the new bubble into view the same way a chat app would.
-    wrapper.scrollIntoView({ behavior: "smooth", block: "end" });
+    updateTranscriptCollapse();
   }
+
+  // Item 5: only the 2-3 most recent turns show by default; older ones are
+  // collapsed behind "Show more" / "Show less". Re-run after every new
+  // bubble (collapse state always applies to "everything past the first
+  // VISIBLE_TURN_COUNT", which shifts as new turns arrive) and after a
+  // discard (item 2's "No") removes a bubble.
+  const VISIBLE_TURN_COUNT = 3;
+  let transcriptExpanded = false;
+
+  function updateTranscriptCollapse() {
+    const items = Array.from(el.transcriptLog.querySelectorAll(".transcript-item"));
+    const hasOverflow = items.length > VISIBLE_TURN_COUNT;
+    items.forEach((item, i) => {
+      item.hidden = !transcriptExpanded && i >= VISIBLE_TURN_COUNT;
+    });
+    el.transcriptToggle.hidden = !hasOverflow;
+    el.transcriptToggle.textContent = t(transcriptExpanded ? "showLess" : "showMore");
+    el.transcriptToggle.dataset.i18n = transcriptExpanded ? "showLess" : "showMore";
+  }
+
+  el.transcriptToggle.addEventListener("click", () => {
+    transcriptExpanded = !transcriptExpanded;
+    updateTranscriptCollapse();
+  });
 
   function setPartial(text) {
     el.partialLine.textContent = text || "";
@@ -866,9 +845,11 @@
       socket.addEventListener("message", handleServerMessage);
       socket.addEventListener("close", () => {
         if (isRecording) {
-          // Server dropped the connection unexpectedly mid-session.
+          // Server dropped the connection unexpectedly mid-session — the
+          // session is genuinely gone here (unlike a normal mic-off), so
+          // tearing down local capture is correct.
           setStatus("error", "statusConnectionLost");
-          stopRecording();
+          teardownAudio();
         }
       });
 
@@ -1005,17 +986,17 @@
     return int16;
   }
 
-  async function startRecording() {
+  // Mic-toggle fix: the mic button controls audio capture ONLY. It must
+  // never touch the WebSocket session, in-flight Gemini/Groq processing,
+  // a pending agent reply, or TTS playback — a turn captured while the mic
+  // was on keeps processing normally even if the mic is toggled off right
+  // after. startAudioCapture() is the reusable "acquire mic + build the
+  // audio graph" half of what startRecording() used to do in one shot;
+  // startRecording() (first press) still connects the WebSocket first,
+  // but a later re-press with an already-open session skips straight to
+  // this instead of reconnecting.
+  async function startAudioCapture(isFreshSession) {
     setStatus("processing", "statusConnecting");
-
-    try {
-      await connectWebSocket();
-    } catch (err) {
-      console.error("WebSocket connection failed:", err);
-      setStatus("error", "statusCouldNotConnect");
-      return;
-    }
-
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
@@ -1023,7 +1004,11 @@
     } catch (err) {
       console.error("Microphone access denied:", err);
       setStatus("error", "statusMicDenied");
-      ws.close();
+      // Only tear down the session if THIS press is the one that created
+      // it (a fresh connect with nothing captured yet) — a failed
+      // re-acquisition on a resume must not touch an already-running
+      // session/conversation.
+      if (isFreshSession && ws) ws.close();
       return;
     }
 
@@ -1084,9 +1069,9 @@
   }
 
   // Tears down local mic capture only — no WebSocket messages, no status
-  // changes. Shared by stopRecording() (patient-initiated: tapped the mic)
-  // and lockSessionComplete() (server-initiated: the conversation itself
-  // concluded, possibly while the mic was still actively recording).
+  // changes. Shared by pauseCapture() (patient-initiated: tapped the mic),
+  // lockSessionComplete() (server-initiated: conversation concluded), and
+  // the WebSocket close handler (connection dropped unexpectedly).
   async function teardownAudio() {
     isRecording = false;
     setMicPressed(false);
@@ -1110,27 +1095,30 @@
     }
   }
 
-  async function stopRecording() {
-    await teardownAudio();
-
-    setStatus("processing", "statusFinishing");
-    setPartial("");
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "end" }));
-      // Wait for the server's "session_ended" ack (sent once its final
-      // summary attempt, including any Gemini retries, is done) before
-      // closing — a fixed timeout risks cutting off a delayed summary.
-      // Fall back to a generous timeout in case the ack never arrives.
-      setTimeout(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.close();
-          setStatus("", "statusIdle");
-        }
-      }, 20000);
-    } else {
-      setStatus("", "statusIdle");
+  // First press only: open the WebSocket (a new SinaSession server-side),
+  // then start capturing. Does NOT send "end" or close anything on its
+  // own — the session now only ever ends via the server's own
+  // session_complete (natural conclusion) or "Start New Session".
+  async function startRecording() {
+    setStatus("processing", "statusConnecting");
+    try {
+      await connectWebSocket();
+    } catch (err) {
+      console.error("WebSocket connection failed:", err);
+      setStatus("error", "statusCouldNotConnect");
+      return;
     }
+    await startAudioCapture(/* isFreshSession */ true);
+  }
+
+  // Mic-off: pauses audio capture ONLY. The session, any in-flight Gemini/
+  // Groq call, and TTS playback are completely unaffected — a turn already
+  // captured keeps processing and the agent's reply still arrives and
+  // plays normally even with the mic off. No WebSocket message is sent.
+  async function pauseCapture() {
+    await teardownAudio();
+    setPartial("");
+    setStatus("", "statusPaused");
   }
 
   // sessionLocked mirrors the server's own _session_locked (see server.py):
@@ -1142,10 +1130,8 @@
 
   function lockSessionComplete(escalated) {
     sessionLocked = true;
-    // The server already decided the conversation is over and will not
-    // send another "session_ended" ack for an "end" we never sent — tear
-    // down local capture directly rather than routing through
-    // stopRecording(), which would wait on an ack that isn't coming.
+    // The server already decided the conversation is over — tear down
+    // local capture directly (mic no longer sends "end"; see pauseCapture()).
     if (isRecording) teardownAudio();
     el.micButton.disabled = true;
     el.micButton.setAttribute("aria-disabled", "true");
@@ -1176,6 +1162,8 @@
       if (child !== el.transcriptPlaceholder) child.remove();
     });
     el.transcriptPlaceholder.hidden = false;
+    transcriptExpanded = false;
+    updateTranscriptCollapse();
     setPartial("");
 
     el.summaryPanel.hidden = true;
@@ -1198,7 +1186,11 @@
   el.micButton.addEventListener("click", () => {
     if (sessionLocked) return;
     if (isRecording) {
-      stopRecording();
+      pauseCapture();
+    } else if (ws && ws.readyState === WebSocket.OPEN) {
+      // Resuming an already-open session — do NOT reconnect, that would
+      // be a new SinaSession and lose everything gathered so far.
+      startAudioCapture(/* isFreshSession */ false);
     } else {
       startRecording();
     }

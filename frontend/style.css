@@ -680,47 +680,36 @@ main {
   background: rgba(0, 0, 0, 0.06);
 }
 
-.confidence-correction-input {
-  font: inherit;
-  font-size: 0.85rem;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  resize: vertical;
-  min-height: 48px;
-  background: var(--surface);
-  color: var(--text);
-}
-
-.confidence-correction-input:focus-visible {
-  outline: 2px solid var(--brand);
-  outline-offset: 1px;
-}
-
-/* Item 3/4 turn-resolution states, layered on top of .transcript-item —
-   deliberately subtle (this is a record of what happened, not a new alert
-   to notice) except for "discarded," which needs to visibly read as "not
-   included" so the transcript accurately reflects what became clinical
-   content. */
-.transcript-item-corrected .transcript-line {
-  border: 1px solid var(--brand);
-}
-
-.transcript-item-disputed .transcript-line {
-  opacity: 0.85;
-}
-
-.transcript-item-discarded .transcript-line {
-  text-decoration: line-through;
-  opacity: 0.55;
-}
+/* No correction/editing UI anymore (simplified per feedback): "Yes" leaves
+   the line completely unchanged, "No" removes it outright — so there's no
+   lingering disputed/discarded/confirmed visual state to style at all. */
 
 .partial-line {
-  margin: 10px 0 0;
+  margin: 0 0 10px;
   min-height: 1.4em;
   color: var(--text-muted);
   font-style: italic;
   font-size: 0.92rem;
+}
+
+.transcript-toggle {
+  display: block;
+  margin: 12px auto 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--brand-dark);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 6px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s var(--ease-standard), border-color 0.15s var(--ease-standard);
+}
+
+.transcript-toggle:hover {
+  background: var(--brand-tint);
+  border-color: var(--brand);
 }
 
 /* ---------- summary card ---------- */

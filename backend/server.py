@@ -30,9 +30,9 @@ patient session:
                                         v                   otherwise: Gemini's
                               speak agent_reply             own agent_reply)
                               normally, keep going           --> lock session,
-                              (English: TTSClient/               no more TTS/
-                              ElevenLabs. Arabic:                 listening
-                              AzureTTSClient.)
+                              (AzureTTSClient for both           no more TTS/
+                              languages — separate voice           listening
+                              per language, see _current_tts())
 
 Protocol (single WebSocket at /ws/session?lang=ar|en — one is required in
 spirit; an omitted/invalid value defaults to "ar" rather than bilingual):
@@ -128,10 +128,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from azure_tts_client import AzureTTSClient
+from azure_tts_client import AZURE_VOICE_NAME_AR, AZURE_VOICE_NAME_EN, AzureTTSClient
 from llm_pipeline import IntakeResult, LLMPipeline, PatientInfo
 from stt_client import STTClient
-from tts_client import TTSClient
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sina.server")
@@ -244,13 +243,19 @@ class SinaSession:
         patient_info: Optional[PatientInfo] = None,
     ) -> None:
         self.ws = websocket
-        # English -> ElevenLabs (Sarah); Arabic -> Azure Speech (Omani
-        # neural voice) — ElevenLabs has no free-tier Arabic voice (see
-        # README Known Limitations), Azure does. Picked per-call by
-        # _current_tts() rather than at construction, since a mid-session
-        # language switch must also switch which TTS provider speaks.
-        self.tts_en = TTSClient()
-        self.tts_ar = AzureTTSClient()
+        # Both languages on Azure now (item 4): originally English used
+        # ElevenLabs (Sarah) and only Arabic was on Azure, since ElevenLabs
+        # has no free-tier Arabic voice (see README Known Limitations).
+        # Switched English to Azure too, to reduce dependency on
+        # ElevenLabs' more limited free-tier quota now that Azure was
+        # already integrated — confirmed comparable voice quality live
+        # before switching. TTSClient (ElevenLabs) is left importable and
+        # unused here as reference/fallback, not routed to by default
+        # anymore. Picked per-call by _current_tts() rather than at
+        # construction, since a mid-session language switch must also
+        # switch which voice speaks.
+        self.tts_en = AzureTTSClient(AZURE_VOICE_NAME_EN)
+        self.tts_ar = AzureTTSClient(AZURE_VOICE_NAME_AR)
         self._current_lang = language_codes[0] if language_codes else "ar"
         # One LLMPipeline for the whole session lifetime, deliberately
         # untouched by a language switch below — it accumulates plain text
