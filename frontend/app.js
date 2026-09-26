@@ -789,6 +789,17 @@
     }, ESCALATION_CONNECTING_MS);
   }
 
+  // Real bug found live: a single shared <audio> element meant that if a
+  // second reply's audio arrived while the first was still playing (e.g.
+  // two debounced summaries landing close together — a normal turn plus a
+  // confirm_turn/correct_turn resolution, or a fast back-to-back exchange),
+  // `el.ttsAudio.src = url` immediately stops whatever was mid-playback and
+  // starts the new clip — from the patient's ear, the reply "cuts off
+  // after a word or two." Queue clips instead: only assign `.src` once the
+  // previous one has actually finished.
+  const audioQueue = [];
+  let audioPlaying = false;
+
   function playBase64Audio(base64, format, context) {
     console.log(`[Sina audio] received "${context}" clip: ${base64.length} base64 chars`);
     const bytes = atob(base64);
@@ -796,6 +807,16 @@
     for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
     const blob = new Blob([buf], { type: "audio/" + (format || "mp3") });
     const url = URL.createObjectURL(blob);
+    audioQueue.push({ url, context });
+    playNextQueuedAudio();
+  }
+
+  function playNextQueuedAudio() {
+    if (audioPlaying) return;
+    const next = audioQueue.shift();
+    if (!next) return;
+    audioPlaying = true;
+    const { url, context } = next;
     el.ttsAudio.src = url;
     el.ttsAudio
       .play()
@@ -810,7 +831,11 @@
         // ever generated" to someone just listening.
         console.error(`[Sina audio] play() BLOCKED/FAILED for "${context}":`, err);
       });
-    el.ttsAudio.onended = () => URL.revokeObjectURL(url);
+    el.ttsAudio.onended = () => {
+      URL.revokeObjectURL(url);
+      audioPlaying = false;
+      playNextQueuedAudio();
+    };
   }
 
   // ---------------------------------------------------------------------
