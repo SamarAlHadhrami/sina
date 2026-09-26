@@ -21,6 +21,7 @@ import logging
 import os
 from typing import Awaitable, Callable, Literal, Optional
 
+import httpx
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors as genai_errors
@@ -39,6 +40,21 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # "the primary key is out for now," not "keep hammering both."
 GEMINI_API_KEY_FALLBACK = os.getenv("GEMINI_API_KEY_FALLBACK")
 GEMINI_MODEL = "gemini-3.6-flash"
+
+# Optional third tier. If BOTH Gemini keys are exhausted (quota) or fail
+# after their retry budgets (503s), fall through to Groq instead of failing
+# the request outright. Groq's free tier (30 req/min, 1000 req/day) is far
+# above Gemini's, so this exists purely as testing headroom, not because
+# Groq is preferred — Gemini stays the default path whenever it's available.
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# openai/gpt-oss-120b: the largest/most capable model on Groq that supports
+# `response_format: json_schema` with `strict: true` (confirmed live against
+# a real GET /models call — the once-standard llama-3.3-70b-versatile is no
+# longer listed on this account's Groq endpoint at all). Structured outputs
+# in strict mode enforce the schema server-side, same guarantee Gemini's
+# response_schema gives us.
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Flash occasionally returns a transient 503 "high demand" ServerError even on
 # a valid request (confirmed empirically); retry a couple of times with
@@ -110,6 +126,26 @@ def _deterministic_red_flags(transcript: str) -> list[str]:
         if any(phrase.lower() in lowered for phrase in phrases):
             matched.append(category)
     return matched
+
+
+def _groq_strict_schema(node):
+    """Groq's `response_format: json_schema` (OpenAI-compatible strict mode)
+    requires every object in the schema to set `additionalProperties: false`
+    and list every one of its properties in `required` — pydantic's
+    model_json_schema() doesn't emit either by default (confirmed live: Groq
+    400s with a specific 'must be set on every object' / 'must be listed in
+    required' error otherwise). Mutates and returns the schema recursively."""
+    if isinstance(node, dict):
+        if node.get("type") == "object" or "properties" in node:
+            node["additionalProperties"] = False
+            if "properties" in node:
+                node["required"] = list(node["properties"].keys())
+        for value in node.values():
+            _groq_strict_schema(value)
+    elif isinstance(node, list):
+        for item in node:
+            _groq_strict_schema(item)
+    return node
 
 
 CriticalFieldType = Literal["medication", "allergy", "symptom_duration", "negation"]
@@ -235,6 +271,11 @@ class IntakeResult(BaseModel):
     # "Finishing up..." status. Mislabeling this as total response time
     # would overstate real-time performance.
     processing_time_ms: float
+    # Which provider actually served this response — "gemini_primary" in the
+    # normal case, "gemini_fallback" or "groq" only when an earlier tier
+    # failed. Surfaced purely for testing/observability (see logging in
+    # _extract), not shown to the patient.
+    served_by: Literal["gemini_primary", "gemini_fallback", "groq"] = "gemini_primary"
 
 
 SYSTEM_PROMPT = """\
@@ -388,6 +429,11 @@ class LLMPipeline:
         self._fallback_client = (
             genai.Client(api_key=GEMINI_API_KEY_FALLBACK) if GEMINI_API_KEY_FALLBACK else None
         )
+        self._groq_client = httpx.AsyncClient(timeout=30.0) if GROQ_API_KEY else None
+        # groq's structured-output schema is derived once from IntakeSummary
+        # (see _groq_json_schema) rather than per-call, since the schema
+        # itself never changes at runtime.
+        self._groq_schema = _groq_strict_schema(IntakeSummary.model_json_schema()) if GROQ_API_KEY else None
         self._on_summary = on_summary
         self._on_escalation = on_escalation
         self._debounce_seconds = debounce_seconds
@@ -406,6 +452,11 @@ class LLMPipeline:
         # on every debounce window, not just once) doesn't repeat the same
         # greeting or question turn after turn.
         self._last_agent_reply: Optional[str] = None
+
+        # Which provider actually served the most recent _extract() call —
+        # read by summarize() right after to stamp the result (see
+        # IntakeResult.served_by). Reset at the top of each _extract() call.
+        self._last_served_by: str = "gemini_primary"
 
         self._last_call_at: float = float("-inf")
         self._debounce_task: Optional[asyncio.Task] = None
@@ -512,6 +563,7 @@ class LLMPipeline:
             logger.info("needs_human_review on first pass (%s) — re-checking once", summary.review_reason)
             summary = await self._extract(transcript, recheck=True)
 
+        served_by = self._last_served_by
         elapsed_ms = (asyncio.get_event_loop().time() - start) * 1000
 
         # Deterministic red-flag check runs on the raw transcript, not
@@ -536,6 +588,7 @@ class LLMPipeline:
             escalate_to_interpreter=escalate,
             deterministic_flags=deterministic_matches,
             processing_time_ms=elapsed_ms,
+            served_by=served_by,
         )
         self.latest_result = result
         # Remembered so the NEXT call (re-summarizing the whole transcript
@@ -584,8 +637,60 @@ class LLMPipeline:
             ),
         )
 
+    async def _call_groq(self, contents: str) -> IntakeSummary:
+        response = await self._groq_client.post(
+            GROQ_API_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model": GROQ_MODEL,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": contents},
+                ],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "IntakeSummary",
+                        "schema": self._groq_schema,
+                        "strict": True,
+                    },
+                },
+            },
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        return IntakeSummary.model_validate_json(content)
+
+    async def _try_groq(self, contents: str) -> IntakeSummary:
+        """Tier 3: only reached once both Gemini keys are unavailable. Given
+        the same retry-with-backoff treatment as each Gemini tier, since a
+        transient failure here shouldn't fail the whole request either."""
+        last_error: Optional[Exception] = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                summary = await self._call_groq(contents)
+                logger.warning("Groq fallback (tier 3) succeeded.")
+                self._last_served_by = "groq"
+                return summary
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                # A 429 here is Groq's own rate limit, not a transient
+                # server error — still worth a backoff-and-retry since the
+                # point of this tier is resilience, not giving up early.
+                logger.warning(
+                    "Groq error on attempt %d/%d: %s", attempt + 1, MAX_RETRIES, e
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
+            except Exception as e:
+                last_error = e
+                break
+        assert last_error is not None
+        raise last_error
+
     async def _extract(self, transcript: str, recheck: bool = False) -> IntakeSummary:
         contents = self._build_contents(transcript, recheck)
+        self._last_served_by = "gemini_primary"
 
         last_error: Optional[Exception] = None
         for attempt in range(MAX_RETRIES):
@@ -621,6 +726,7 @@ class LLMPipeline:
                         try:
                             response = await self._call_gemini(self._fallback_client, contents)
                             logger.warning("Fallback Gemini key succeeded.")
+                            self._last_served_by = "gemini_fallback"
                             return IntakeSummary.model_validate_json(response.text)
                         except genai_errors.ServerError as fb_e:
                             fallback_error = fb_e
@@ -634,8 +740,19 @@ class LLMPipeline:
                             fallback_error = fb_e
                             break
                     logger.error("Fallback Gemini key ALSO failed: %s", fallback_error)
+                    if self._groq_client:
+                        logger.warning("Both Gemini keys exhausted — falling through to Groq (tier 3)")
+                        return await self._try_groq(contents)
                     raise fallback_error from e
                 raise
+
+        # Primary key exhausted its own retry budget on repeated 503s
+        # (not caught by the ClientError/quota branch above, since a
+        # ServerError never triggers the fallback-key path) — same
+        # "try the next tier before giving up" logic applies here.
+        if self._groq_client:
+            logger.warning("Primary Gemini key exhausted retries on 503s — falling through to Groq (tier 3)")
+            return await self._try_groq(contents)
 
         assert last_error is not None
         raise last_error

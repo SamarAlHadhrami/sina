@@ -27,8 +27,8 @@ video.
 - **Frontend**: plain HTML/CSS/JS, no framework. Mic capture via Web Audio API.
 
 All API keys live in `.env` (gitignored): `ASSEMBLYAI_API_KEY`,
-`GEMINI_API_KEY`, `GEMINI_API_KEY_FALLBACK` (optional), `ELEVENLABS_API_KEY`,
-`AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`.
+`GEMINI_API_KEY`, `GEMINI_API_KEY_FALLBACK` (optional), `GROQ_API_KEY`
+(optional), `ELEVENLABS_API_KEY`, `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`.
 
 ## Safety architecture (core narrative)
 
@@ -103,8 +103,18 @@ it does not get the final word on whether something is dangerous.
    covered. `agent_reply` is muted on an escalating turn — the escalation
    notice always takes priority, never a routine question. A second Gemini
    API key can be set as `GEMINI_API_KEY_FALLBACK` in `.env`; on a 429
-   (either the per-minute or daily cap), one attempt is made with it before
-   giving up, logged clearly either way.
+   (either the per-minute or daily cap), one attempt (with its own 503
+   retry-with-backoff) is made with it before giving up, logged clearly
+   either way. If BOTH Gemini keys are unavailable — quota exhausted or
+   repeated 503s after their retry budgets — extraction falls through to a
+   third tier, Groq (`GROQ_API_KEY`, optional), calling `openai/gpt-oss-120b`
+   with the identical Pydantic schema via OpenAI-compatible strict structured
+   outputs. This is purely testing headroom (Groq's free tier is 30 req/min
+   / 1000 req/day, well above Gemini's), not a preferred provider — Gemini
+   is always tried first. Each `IntakeResult` carries a `served_by` field
+   (`gemini_primary` / `gemini_fallback` / `groq`) and every tier transition
+   is logged, so it's always clear which provider actually answered a given
+   turn during testing.
 
 ## Repo layout
 
@@ -201,6 +211,20 @@ replies `{"type":"session_ended"}` once safe to close the socket).
   on Flash, confirmed empirically).
 - **Gemini key is free-tier: 5 requests/minute.** This drove the debounce
   design below (user's explicit decision — no budget for upgrade).
+- **Three-tier provider fallback**: primary Gemini key → fallback Gemini key
+  (`GEMINI_API_KEY_FALLBACK`) → Groq (`GROQ_API_KEY`, `openai/gpt-oss-120b`).
+  Groq is reached only once both Gemini tiers are exhausted; it's given the
+  same schema (via `_groq_strict_schema()`, which post-processes pydantic's
+  `model_json_schema()` to add the `additionalProperties: false` +
+  exhaustive `required` that Groq's OpenAI-compatible strict structured
+  outputs require but pydantic doesn't emit by default — confirmed live via
+  a 400 asking for exactly that) and OpenAI-compatible strict `json_schema`
+  response format, so the output is exactly `IntakeSummary`, just like
+  Gemini's `response_schema`. Verified live end-to-end: while both real
+  Gemini keys were quota-exhausted from earlier testing, a real `summarize()`
+  call correctly fell through to Groq and returned a valid, schema-matching,
+  clinically-correct response. Purely a testing-headroom safety net (Groq's
+  free tier: 30 req/min, 1000 req/day) — Gemini is always tried first.
 - **Debounce** (`DEBOUNCE_SECONDS = 13.0`, i.e. 5/min limit's 12s minimum +
   1s margin): completed STT turns don't call Gemini directly — they're
   coalesced. First call fires immediately; subsequent turns within the window

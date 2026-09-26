@@ -20,3 +20,5 @@ services:
         sync: false
       - key: AZURE_SPEECH_REGION
         sync: false
+      - key: GROQ_API_KEY
+        sync: false
