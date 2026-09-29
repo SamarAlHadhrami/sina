@@ -18,3 +18,5 @@ services:
         sync: false
       - key: AZURE_SPEECH_REGION
         sync: false
+      - key: CARE_TEAM_WEBHOOK_URL
+        sync: false

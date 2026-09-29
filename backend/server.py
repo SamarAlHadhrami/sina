@@ -120,10 +120,13 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
 
+import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -131,6 +134,8 @@ from fastapi.staticfiles import StaticFiles
 from azure_tts_client import AZURE_VOICE_NAME_AR, AZURE_VOICE_NAME_EN, AzureTTSClient
 from llm_pipeline import IntakeResult, LLMPipeline, PatientInfo
 from stt_client import STTClient
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sina.server")
@@ -165,19 +170,28 @@ if FRONTEND_DIR.exists():
 async def root() -> RedirectResponse:
     return RedirectResponse(url="/static/")
 
-# Spoken notice when a session is escalated to a human interpreter. Kept
-# short and calm. Two versions since escalation must be spoken in whichever
-# language is currently active (see _current_tts()) — playing the English
-# line through the Arabic voice, or vice versa, would come out mispronounced
-# rather than just accented.
+# Fixed closing lines — spoken once when intake is done. Never leave
+# safety-critical or wrap-up phrasing to the LLM; agent_reply is for
+# mid-conversation follow-ups only. Spoken in the active session language
+# via _current_tts() (wrong-language voice would mispronounce the line).
+CLOSING_MESSAGE_EN = (
+    "I've noted everything. A clinician will review this shortly."
+)
+CLOSING_MESSAGE_AR = (
+    "لقد سجّلت كل شيء. سيراجع طبيب هذه المعلومات قريبًا."
+)
 ESCALATION_MESSAGE_EN = (
-    "I've noted everything. Because this may need urgent care, "
-    "I'm arranging immediate human attention for you now. Please stay with me."
+    "I've noted everything. This needs immediate attention — "
+    "help is being arranged now."
 )
 ESCALATION_MESSAGE_AR = (
-    "لقد سجّلت كل شيء. ولأن هذه الحالة قد تحتاج رعاية عاجلة، "
-    "سأرتّب لك اهتمامًا بشريًا فوريًا الآن. من فضلك ابقَ معي."
+    "لقد سجّلت كل شيء. هذه الحالة تحتاج اهتمامًا فوريًا — "
+    "جارٍ ترتيب المساعدة الآن."
 )
+
+# Optional real care-team notify (email/SMS gateway, Slack, etc.).
+# If unset, escalation stays UI + spoken handoff only — honest for demos.
+CARE_TEAM_WEBHOOK_URL = os.getenv("CARE_TEAM_WEBHOOK_URL")
 
 # Below this average per-word confidence, a final turn is flagged to the
 # frontend as uncertain so it can show a "did I hear that right?" prompt
@@ -498,7 +512,8 @@ class SinaSession:
                 message = ESCALATION_MESSAGE_AR if self._current_lang == "ar" else ESCALATION_MESSAGE_EN
                 context = "escalation"
             else:
-                message = summary.agent_reply
+                # Fixed calm close — do not speak the LLM's draft wrap-up.
+                message = CLOSING_MESSAGE_AR if self._current_lang == "ar" else CLOSING_MESSAGE_EN
                 context = "agent_reply"
             if message:
                 try:
@@ -516,6 +531,39 @@ class SinaSession:
             except Exception:
                 logger.exception("Failed to synthesize agent_reply")
 
+    async def _notify_care_team(self, result: IntakeResult) -> None:
+        """Optional real handoff: POST a compact JSON payload to
+        CARE_TEAM_WEBHOOK_URL when urgency first trips high. No-op when
+        the env var is unset (demo / local). Failures are logged only —
+        never block the patient-facing session."""
+        if not CARE_TEAM_WEBHOOK_URL:
+            return
+        info = self.llm.patient_info
+        payload = {
+            "event": "sina_high_urgency",
+            "patient": {
+                "name": info.name,
+                "age": info.age,
+                "gender": info.gender,
+                "occupation": info.occupation,
+            },
+            "language": self._current_lang,
+            "urgency": result.summary.urgency,
+            "red_flags": result.summary.red_flags,
+            "deterministic_flags": result.deterministic_flags,
+            "symptoms": result.summary.symptoms,
+            "medications": result.summary.medications,
+            "allergies": result.summary.allergies,
+            "summary_note": result.summary.summary_note,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.post(CARE_TEAM_WEBHOOK_URL, json=payload)
+                response.raise_for_status()
+            logger.info("Care-team webhook notified successfully.")
+        except Exception:
+            logger.exception("Care-team webhook failed (session continues)")
+
     async def _send_escalation(self, result: IntakeResult) -> None:
         """Fires the visual escalation banner/indicator IMMEDIATELY the
         first time a session becomes high-urgency (item 1a) — idempotent,
@@ -530,6 +578,8 @@ class SinaSession:
             return
         self._escalation_banner_shown = True
         await self._send_json({"type": "escalation", "red_flags": result.summary.red_flags})
+        # Fire-and-forget so a slow webhook never delays the banner/audio path.
+        asyncio.create_task(self._notify_care_team(result))
 
     async def _lock_session(self, escalated: bool) -> None:
         """Session-lock fix: called once the closing statement (normal or escalation)

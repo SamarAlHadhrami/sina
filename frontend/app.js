@@ -41,8 +41,8 @@
       disclaimer:
         "Sina organizes intake for clinicians. It does not diagnose or replace emergency care.",
       escalationFlagged: "Urgent — needs human attention",
-      escalationConnecting: "Arranging immediate help",
-      escalationConnected: "Immediate attention requested",
+      escalationConnecting: "Notifying the care team…",
+      escalationConnected: "Care team notified — someone will take over shortly.",
       escalationBody: "This case was flagged as high urgency. A human clinician should review it right away.",
       reviewHeadline: "Needs clinician check",
       reviewReasonDefault: "A critical field could not be determined with confidence.",
@@ -101,7 +101,19 @@
       showLess: "Show less",
       startNewSession: "Start New Session",
       statusSessionComplete: "Session complete — everything noted",
-      statusSessionEscalated: "Session complete — immediate attention requested",
+      statusSessionEscalated: "Session complete — care team notified",
+      notedStampNormal: "Everything noted",
+      notedStampUrgent: "Everything noted — immediate attention requested",
+      notedStampAt: (when) => `Everything noted · ${when}`,
+      notedStampUrgentAt: (when) => `Everything noted — immediate attention · ${when}`,
+      spotlightTech:
+        "Powered by AssemblyAI Universal Streaming with Medical Mode — live bilingual transcription built for clinical speech.",
+      spotlightSafety:
+        "Safety net: red-flag phrases (e.g. chest pain) force high urgency in code — the AI cannot downgrade them.",
+      roadmapToday: "Today",
+      roadmapTodayBody: "Arabic + English voice intake, structured clinician summary, and urgency handoff.",
+      roadmapNext: "Next",
+      roadmapNextBody: "More languages, and a real live clinician / care-team connection — not a simulated banner.",
     },
     ar: {
       pageTitle: "سينا — الفحص السريري الأولي",
@@ -122,8 +134,8 @@
       disclaimer:
         "تنظّم سينا معلومات الفحص الأولي للأطباء. وهي لا تشخّص ولا تُغني عن الطوارئ.",
       escalationFlagged: "عاجل — يحتاج اهتمامًا بشريًا",
-      escalationConnecting: "جارٍ ترتيب المساعدة الفورية",
-      escalationConnected: "تم طلب الاهتمام الفوري",
+      escalationConnecting: "جارٍ إبلاغ فريق الرعاية…",
+      escalationConnected: "تم إبلاغ فريق الرعاية — سيتولى أحدهم الأمر قريبًا.",
       escalationBody: "صُنّفت هذه الحالة كعاجلة. ينبغي أن يراجعها طبيب فورًا.",
       reviewHeadline: "تحتاج مراجعة الطبيب",
       reviewReasonDefault: "تعذّر تحديد أحد الحقول المهمة بثقة كافية.",
@@ -181,7 +193,19 @@
       showLess: "عرض أقل",
       startNewSession: "بدء جلسة جديدة",
       statusSessionComplete: "انتهت الجلسة — تم تسجيل كل شيء",
-      statusSessionEscalated: "انتهت الجلسة — تم طلب الاهتمام الفوري",
+      statusSessionEscalated: "انتهت الجلسة — تم إبلاغ فريق الرعاية",
+      notedStampNormal: "تم تسجيل كل شيء",
+      notedStampUrgent: "تم تسجيل كل شيء — طُلب الاهتمام الفوري",
+      notedStampAt: (when) => `تم تسجيل كل شيء · ${when}`,
+      notedStampUrgentAt: (when) => `تم تسجيل كل شيء — اهتمام فوري · ${when}`,
+      spotlightTech:
+        "مدعوم من AssemblyAI Universal Streaming مع الوضع الطبي — تفريغ صوتي مباشر ثنائي اللغة للكلام السريري.",
+      spotlightSafety:
+        "شبكة أمان: عبارات الخطر (مثل ألم الصدر) تفرض الأولوية العالية برمجيًا — ولا يستطيع الذكاء الاصطناعي خفضها.",
+      roadmapToday: "اليوم",
+      roadmapTodayBody: "فحص أولي صوتي بالعربية والإنجليزية، ملخص منظم للطبيب، وتصعيد حسب الإلحاح.",
+      roadmapNext: "لاحقًا",
+      roadmapNextBody: "مزيد من اللغات، واتصال حقيقي مباشر بفريق الرعاية — وليس شريطًا محاكيًا فقط.",
     },
   };
 
@@ -218,6 +242,7 @@
     escalationDots: document.getElementById("escalationDots"),
     escalationIcon: document.getElementById("escalationIcon"),
     summaryPanel: document.getElementById("summaryPanel"),
+    notedStamp: document.getElementById("notedStamp"),
     urgencyBadge: document.getElementById("urgencyBadge"),
     summaryNote: document.getElementById("summaryNote"),
     symptomsList: document.getElementById("symptomsList"),
@@ -298,6 +323,7 @@
     renderStatus();
     setMicPressed(isRecording);
     updateEscalationText();
+    updateNotedStamp();
 
     if (currentUrgency) {
       el.urgencyBadge.textContent = t(URGENCY_KEYS[currentUrgency] || currentUrgency);
@@ -553,6 +579,13 @@
       .replace(/\b\d+\s+[A-Za-z]+\s+(street|st\.?|road|rd\.?|avenue|ave\.?)\b/gi, "[redacted: address]");
   }
 
+  // Latest intake payload held while the call is live — summary UI is
+  // parked until the session concludes so the screen stays mic + transcript.
+  let pendingSummary = null;
+  let summaryRevealed = false;
+  let sessionEscalated = false;
+  let notedAt = null;
+
   function renderList(listEl, items) {
     listEl.innerHTML = "";
     listEl.classList.toggle("empty", !items || items.length === 0);
@@ -570,9 +603,32 @@
     }
   }
 
-  function renderSummary(payload) {
+  function formatNotedWhen(date) {
+    try {
+      return date.toLocaleString(uiLang === "ar" ? "ar" : "en", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      });
+    } catch {
+      return date.toISOString();
+    }
+  }
+
+  function updateNotedStamp() {
+    if (!notedAt) {
+      el.notedStamp.hidden = true;
+      el.notedStamp.textContent = "";
+      return;
+    }
+    const when = formatNotedWhen(notedAt);
+    const key = sessionEscalated ? "notedStampUrgentAt" : "notedStampAt";
+    const entry = STRINGS[uiLang][key];
+    el.notedStamp.textContent = typeof entry === "function" ? entry(when) : when;
+    el.notedStamp.hidden = false;
+  }
+
+  function applySummaryPayload(payload) {
     const summary = payload.summary;
-    el.summaryPanel.hidden = false;
 
     if (typeof payload.processing_time_ms === "number") {
       el.latencyStat.hidden = false;
@@ -603,28 +659,50 @@
       el.clinicalNotesSection.hidden = true;
     }
 
-    // Transcript Integrity / critical-fields section is intentionally not
-    // shown in the patient-facing summary anymore — the underlying data
-    // still arrives in `summary.critical_fields` on every payload (kept
-    // for any future export/internal use), it's just not rendered here.
-
-    if (summary.needs_human_review) {
+    // Review banner only once the summary card is visible — mid-call we
+    // keep the screen to mic + transcript (+ the urgent flag if any).
+    if (summaryRevealed && summary.needs_human_review) {
       el.reviewBanner.hidden = false;
       el.reviewReason.textContent = summary.review_reason || t("reviewReasonDefault");
+    } else if (!summaryRevealed) {
+      // keep deferred
     } else {
       el.reviewBanner.hidden = true;
     }
+  }
 
-    // NOTE: the animated "Connecting you to an interpreter..." sequence is
-    // deliberately NOT triggered here anymore. This used to fire on every
-    // summary for the rest of an escalating session (escalate_to_interpreter
-    // stays true once set — see llm_pipeline.py's debounce design), which
-    // replayed the full connecting/connected animation on every debounced
-    // summary and made an otherwise-normal, still-ongoing conversation look
-    // stalled/stuck. The one-time immediate "flagged" indicator comes from
-    // the server's dedicated "escalation" message (see handleServerMessage)
-    // instead, and the real connecting/connected sequence is deferred to
-    // "session_complete" (the actual final handoff) — see there.
+  function cacheSummary(payload) {
+    pendingSummary = payload;
+    // Latency is useful mid-call feedback without revealing the full card.
+    if (typeof payload.processing_time_ms === "number") {
+      el.latencyStat.hidden = false;
+      el.latencyStat.textContent = `Processed in ${(payload.processing_time_ms / 1000).toFixed(1)}s`;
+    }
+  }
+
+  function revealSummary(escalated) {
+    if (!pendingSummary) return;
+    summaryRevealed = true;
+    sessionEscalated = !!escalated;
+    if (!notedAt) notedAt = new Date();
+    applySummaryPayload(pendingSummary);
+    updateNotedStamp();
+    el.summaryPanel.hidden = false;
+    // Re-apply review banner now that the card is visible.
+    const summary = pendingSummary.summary;
+    if (summary.needs_human_review) {
+      el.reviewBanner.hidden = false;
+      el.reviewReason.textContent = summary.review_reason || t("reviewReasonDefault");
+    }
+  }
+
+  function renderSummary(payload) {
+    // Mid-call: cache only. End-of-session reveals via revealSummary().
+    cacheSummary(payload);
+    if (summaryRevealed) {
+      applySummaryPayload(payload);
+      updateNotedStamp();
+    }
   }
 
   function renderCriticalFields(fields) {
@@ -948,14 +1026,15 @@
         break;
 
       case "session_ended":
-        // Server has finished flushing the final summary attempt (including
-        // any Gemini retries) — now it's safe to close the socket. This is
-        // the client-initiated "I tapped stop" ack; session_complete below
-        // is the separate, server-initiated "the conversation itself has
-        // concluded" signal (escalation-continuation / session-lock fix) —
-        // the two can arrive independently of each other.
+        // Server finished flushing after a client stop — reveal the parked
+        // summary if we have one, then close.
+        if (pendingSummary && !summaryRevealed) {
+          revealSummary(!!(pendingSummary.escalate_to_interpreter));
+        }
         if (ws) ws.close();
-        setStatus("", "statusIdle");
+        setStatus("", summaryRevealed
+          ? (sessionEscalated ? "statusSessionEscalated" : "statusSessionComplete")
+          : "statusIdle");
         break;
 
       case "session_complete":
@@ -966,12 +1045,10 @@
         // decided the conversation is over, possibly while the mic was
         // still actively recording.
         //
-        // The real "Connecting you to an interpreter... Interpreter
-        // connected" animated sequence is deferred to exactly this moment
-        // (not the earlier immediate flag) — this is the actual final
-        // handoff action, alongside the fixed escalation audio the server
-        // just sent.
+        // Reveal the parked intake summary now (red flags first + noted
+        // stamp). Care-team notify animation only when escalated.
         if (msg.escalated) showEscalation();
+        revealSummary(!!msg.escalated);
         lockSessionComplete(msg.escalated);
         break;
 
@@ -1199,11 +1276,17 @@
     setPartial("");
 
     el.summaryPanel.hidden = true;
+    el.notedStamp.hidden = true;
+    el.notedStamp.textContent = "";
     el.escalationBanner.hidden = true;
     el.reviewBanner.hidden = true;
     el.latencyStat.hidden = true;
     currentUrgency = null;
     escalationState = null;
+    pendingSummary = null;
+    summaryRevealed = false;
+    sessionEscalated = false;
+    notedAt = null;
 
     patientInfo = { name: "", age: "", gender: "", occupation: "" };
     el.patientForm.reset();

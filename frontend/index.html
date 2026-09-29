@@ -55,7 +55,7 @@
     <div id="escalationBanner" class="escalation-banner" hidden role="alert">
       <span id="escalationIcon" class="escalation-icon" aria-hidden="true">&#9888;</span>
       <div>
-        <strong id="escalationHeadline" data-i18n="escalationConnecting">Arranging immediate help</strong>
+        <strong id="escalationHeadline" data-i18n="escalationConnecting">Notifying the care team…</strong>
         <span id="escalationDots" class="escalation-dots" aria-hidden="true">
           <span></span><span></span><span></span>
         </span>
@@ -161,6 +161,16 @@
         </div>
       </div>
 
+      <!-- Clinician-facing stamp: set when the session concludes. Leads the
+           print/PDF export so a handoff packet opens with status + time. -->
+      <p id="notedStamp" class="noted-stamp" hidden></p>
+
+      <!-- Red flags first — the thing a clinician needs before the narrative. -->
+      <div id="redFlagsSection" class="red-flags-section" hidden>
+        <h3 data-i18n="redFlagsHeading">Red Flags</h3>
+        <ul id="redFlagsList" class="summary-list red-flags-list"></ul>
+      </div>
+
       <p id="summaryNote" class="summary-note"></p>
 
       <div class="summary-grid">
@@ -178,11 +188,6 @@
         </div>
       </div>
 
-      <div id="redFlagsSection" class="red-flags-section" hidden>
-        <h3 data-i18n="redFlagsHeading">Red Flags</h3>
-        <ul id="redFlagsList" class="summary-list red-flags-list"></ul>
-      </div>
-
       <div id="clinicalNotesSection" class="clinical-notes-section" hidden>
         <h3 data-i18n="clinicalNotesHeading">Clinical Notes</h3>
         <p class="clinical-notes-caveat" data-i18n="clinicalNotesCaveat">AI-generated cross-references for clinician review — not a diagnosis.</p>
@@ -198,6 +203,27 @@
         <ul id="criticalFieldsList" class="critical-fields-list"></ul>
       </div>
     </section>
+
+    <!-- Hackathon story strip: AssemblyAI credit + safety claim + roadmap.
+         Kept at the bottom so the mic/transcript stay the primary surface. -->
+    <aside class="product-spotlight" aria-label="Product highlights">
+      <p class="spotlight-line" data-i18n="spotlightTech">
+        Powered by AssemblyAI Universal Streaming with Medical Mode — live bilingual transcription built for clinical speech.
+      </p>
+      <p class="spotlight-line spotlight-safety" data-i18n="spotlightSafety">
+        Safety net: red-flag phrases (e.g. chest pain) force high urgency in code — the AI cannot downgrade them.
+      </p>
+      <div class="roadmap">
+        <div class="roadmap-col">
+          <h3 data-i18n="roadmapToday">Today</h3>
+          <p data-i18n="roadmapTodayBody">Arabic + English voice intake, structured clinician summary, and urgency handoff.</p>
+        </div>
+        <div class="roadmap-col">
+          <h3 data-i18n="roadmapNext">Next</h3>
+          <p data-i18n="roadmapNextBody">More languages, and a real live clinician / care-team connection — not a simulated banner.</p>
+        </div>
+      </div>
+    </aside>
   </main>
 
   <audio id="ttsAudio" hidden></audio>
