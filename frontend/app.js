@@ -106,14 +106,6 @@
       notedStampUrgent: "Everything noted — immediate attention requested",
       notedStampAt: (when) => `Everything noted · ${when}`,
       notedStampUrgentAt: (when) => `Everything noted — immediate attention · ${when}`,
-      spotlightTech:
-        "Powered by AssemblyAI Universal Streaming with Medical Mode — live bilingual transcription built for clinical speech.",
-      spotlightSafety:
-        "Safety net: red-flag phrases (e.g. chest pain) force high urgency in code — the AI cannot downgrade them.",
-      roadmapToday: "Today",
-      roadmapTodayBody: "Arabic + English voice intake, structured clinician summary, and urgency handoff.",
-      roadmapNext: "Next",
-      roadmapNextBody: "More languages, and a real live clinician / care-team connection — not a simulated banner.",
     },
     ar: {
       pageTitle: "سينا — الفحص السريري الأولي",
@@ -198,14 +190,6 @@
       notedStampUrgent: "تم تسجيل كل شيء — طُلب الاهتمام الفوري",
       notedStampAt: (when) => `تم تسجيل كل شيء · ${when}`,
       notedStampUrgentAt: (when) => `تم تسجيل كل شيء — اهتمام فوري · ${when}`,
-      spotlightTech:
-        "مدعوم من AssemblyAI Universal Streaming مع الوضع الطبي — تفريغ صوتي مباشر ثنائي اللغة للكلام السريري.",
-      spotlightSafety:
-        "شبكة أمان: عبارات الخطر (مثل ألم الصدر) تفرض الأولوية العالية برمجيًا — ولا يستطيع الذكاء الاصطناعي خفضها.",
-      roadmapToday: "اليوم",
-      roadmapTodayBody: "فحص أولي صوتي بالعربية والإنجليزية، ملخص منظم للطبيب، وتصعيد حسب الإلحاح.",
-      roadmapNext: "لاحقًا",
-      roadmapNextBody: "مزيد من اللغات، واتصال حقيقي مباشر بفريق الرعاية — وليس شريطًا محاكيًا فقط.",
     },
   };
 
