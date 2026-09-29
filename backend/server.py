@@ -171,9 +171,13 @@ async def root() -> RedirectResponse:
 # line through the Arabic voice, or vice versa, would come out mispronounced
 # rather than just accented.
 ESCALATION_MESSAGE_EN = (
-    "I'm connecting you with a human interpreter now. Please hold on for a moment."
+    "I've noted everything. Because this may need urgent care, "
+    "I'm arranging immediate human attention for you now. Please stay with me."
 )
-ESCALATION_MESSAGE_AR = "سأقوم بتوصيلك بمترجم بشري الآن. يرجى الانتظار للحظة."
+ESCALATION_MESSAGE_AR = (
+    "لقد سجّلت كل شيء. ولأن هذه الحالة قد تحتاج رعاية عاجلة، "
+    "سأرتّب لك اهتمامًا بشريًا فوريًا الآن. من فضلك ابقَ معي."
+)
 
 # Below this average per-word confidence, a final turn is flagged to the
 # frontend as uncertain so it can show a "did I hear that right?" prompt

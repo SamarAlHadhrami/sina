@@ -39,14 +39,12 @@
       langNameAr: "Arabic",
       langNameEn: "English",
       disclaimer:
-        "Sina collects and organizes intake information. It does not diagnose " +
-        "conditions or replace emergency services. All escalations are " +
-        "reviewed by a human.",
-      escalationFlagged: "Flagged as high priority",
-      escalationConnecting: "Connecting you with a human interpreter",
-      escalationConnected: "Interpreter connected",
-      escalationBody: "This case has been flagged as high urgency and requires immediate human attention.",
-      reviewHeadline: "Flagged for human review",
+        "Sina organizes intake for clinicians. It does not diagnose or replace emergency care.",
+      escalationFlagged: "Urgent — needs human attention",
+      escalationConnecting: "Arranging immediate help",
+      escalationConnected: "Immediate attention requested",
+      escalationBody: "This case was flagged as high urgency. A human clinician should review it right away.",
+      reviewHeadline: "Needs clinician check",
       reviewReasonDefault: "A critical field could not be determined with confidence.",
       patientFormHeading: "Before we start",
       patientFormHint:
@@ -102,8 +100,8 @@
       showMore: "Show more",
       showLess: "Show less",
       startNewSession: "Start New Session",
-      statusSessionComplete: "Session complete",
-      statusSessionEscalated: "Session complete — escalated to interpreter",
+      statusSessionComplete: "Session complete — everything noted",
+      statusSessionEscalated: "Session complete — immediate attention requested",
     },
     ar: {
       pageTitle: "سينا — الفحص السريري الأولي",
@@ -122,13 +120,12 @@
       langNameAr: "العربية",
       langNameEn: "الإنجليزية",
       disclaimer:
-        "تقوم سينا بجمع وتنظيم معلومات الفحص الأولي. وهي لا تشخّص الحالات " +
-        "ولا تُغني عن خدمات الطوارئ. تخضع جميع حالات التصعيد لمراجعة بشرية.",
-      escalationFlagged: "تم تصنيفها كأولوية عالية",
-      escalationConnecting: "جارٍ توصيلك بمترجم بشري",
-      escalationConnected: "تم توصيل المترجم",
-      escalationBody: "تم تصنيف هذه الحالة على أنها عاجلة وتتطلب اهتمامًا بشريًا فوريًا.",
-      reviewHeadline: "تم تمييزها للمراجعة البشرية",
+        "تنظّم سينا معلومات الفحص الأولي للأطباء. وهي لا تشخّص ولا تُغني عن الطوارئ.",
+      escalationFlagged: "عاجل — يحتاج اهتمامًا بشريًا",
+      escalationConnecting: "جارٍ ترتيب المساعدة الفورية",
+      escalationConnected: "تم طلب الاهتمام الفوري",
+      escalationBody: "صُنّفت هذه الحالة كعاجلة. ينبغي أن يراجعها طبيب فورًا.",
+      reviewHeadline: "تحتاج مراجعة الطبيب",
       reviewReasonDefault: "تعذّر تحديد أحد الحقول المهمة بثقة كافية.",
       patientFormHeading: "قبل أن نبدأ",
       patientFormHint:
@@ -183,8 +180,8 @@
       showMore: "عرض المزيد",
       showLess: "عرض أقل",
       startNewSession: "بدء جلسة جديدة",
-      statusSessionComplete: "انتهت الجلسة",
-      statusSessionEscalated: "انتهت الجلسة — تم التصعيد إلى مترجم",
+      statusSessionComplete: "انتهت الجلسة — تم تسجيل كل شيء",
+      statusSessionEscalated: "انتهت الجلسة — تم طلب الاهتمام الفوري",
     },
   };
 
