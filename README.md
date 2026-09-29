@@ -16,21 +16,21 @@ video.
 - **STT**: AssemblyAI Universal-3.5 Pro Streaming (`speech_model=universal-3-5-pro`),
   Medical Mode (`domain=medical`), single-language per session (see Safety
   Architecture below — code-switching is deliberately unused).
-- **LLM**: Gemini Flash (`gemini-3.6-flash`) — structured JSON extraction via
-  Pydantic `response_schema`, plus a deterministic keyword layer that Gemini
-  cannot override (see below).
-- **TTS**: dual-provider by language — ElevenLabs (`eleven_flash_v2_5`,
-  voice "Sarah") for English; Azure Speech (`ar-OM-AyshaNeural`, Omani
-  Arabic neural voice) for Arabic, since ElevenLabs has no Arabic voice on
-  the free tier (see Known Limitations).
+- **LLM**: Groq (`openai/gpt-oss-120b`) — structured JSON extraction via
+  OpenAI-compatible strict `json_schema`, plus a deterministic keyword layer
+  that the LLM cannot override (see below). Single provider for reply speed
+  (Gemini free-tier was the previous bottleneck).
+- **TTS**: Azure Speech for both English and Arabic (`en-US-JennyNeural` /
+  `ar-OM-AyshaNeural`). `tts_client.py` (ElevenLabs) is kept as unused
+  reference only.
 - **Backend**: FastAPI, one WebSocket per session at `/ws/session`.
 - **Frontend**: plain HTML/CSS/JS, no framework. Mic capture via Web Audio
   API. Full bilingual UI (see below) — not just the AI's own replies.
 
 All API keys live in `.env` (gitignored): `ASSEMBLYAI_API_KEY`,
-`GEMINI_API_KEY`, `GROQ_API_KEY` (optional fallback),
-`ELEVENLABS_API_KEY` (unused reference/fallback — see `tts_client.py`),
-`AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`.
+`GROQ_API_KEY` (required), `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`,
+`ELEVENLABS_API_KEY` (unused reference — see `tts_client.py`).
+`GEMINI_API_KEY` is no longer used.
 
 ## Safety architecture (core narrative)
 

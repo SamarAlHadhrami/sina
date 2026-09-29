@@ -10,13 +10,11 @@ services:
     envVars:
       - key: ASSEMBLYAI_API_KEY
         sync: false
-      - key: GEMINI_API_KEY
+      - key: GROQ_API_KEY
         sync: false
       - key: ELEVENLABS_API_KEY
         sync: false
       - key: AZURE_SPEECH_KEY
         sync: false
       - key: AZURE_SPEECH_REGION
-        sync: false
-      - key: GROQ_API_KEY
         sync: false

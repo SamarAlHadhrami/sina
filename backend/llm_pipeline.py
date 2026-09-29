@@ -2,7 +2,7 @@
 backend/llm_pipeline.py
 
 Turns Sina's running bilingual (Arabic/English) transcript into a structured
-clinical intake summary using Gemini Flash, and applies the escalation rule:
+clinical intake summary using Groq, and applies the escalation rule:
 a high-urgency assessment must be flagged for a human interpreter instead of
 being handed to the patient/clinician as a plain summary card.
 
@@ -10,8 +10,9 @@ Wire this in as the `on_turn` callback passed to STTClient (see stt_client.py):
 each AssemblyAI Turn message is fed in, and once `end_of_turn` is True the
 accumulated transcript is re-summarized.
 
-Docs:
-  https://ai.google.dev/gemini-api/docs/structured-output
+Single-provider by design (speed): Gemini free-tier was the main reply lag
+(often 7–15s, plus a debounce window for its 5/min cap). Groq alone is fast
+enough for live intake and already supports strict JSON-schema outputs.
 """
 
 from __future__ import annotations
@@ -23,72 +24,32 @@ from typing import Awaitable, Callable, Literal, Optional
 
 import httpx
 from dotenv import load_dotenv
-from google import genai
-from google.genai import errors as genai_errors
-from google.genai import types
 from pydantic import BaseModel, Field
 
 load_dotenv()
 
 logger = logging.getLogger("sina.llm")
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-3.6-flash"
-
-# Optional second (and only fallback) tier. If Gemini is exhausted (quota)
-# or fails after its retry budget (503s), fall through to Groq instead of
-# failing the request outright. Simplified back down to two tiers by
-# request — a second Gemini key and an OpenRouter third tier were tried and
-# removed again to keep the chain simple and fast.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # openai/gpt-oss-120b: the largest/most capable model on Groq that supports
 # `response_format: json_schema` with `strict: true` (confirmed live against
 # a real GET /models call — the once-standard llama-3.3-70b-versatile is no
 # longer listed on this account's Groq endpoint at all). Structured outputs
-# in strict mode enforce the schema server-side, same guarantee Gemini's
-# response_schema gives us.
+# in strict mode enforce the schema server-side.
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Latency fix (2nd round): Gemini's own generation time varies a lot
-# (English replies were observed live taking 7-15s on some turns, vs
-# Arabic's more consistent timing) — a SECOND attempt on a slow/failing
-# call doubles that wait for no benefit, since Gemini being slow once
-# usually means it's slow again immediately after. Reduced to a single
-# attempt per tier (no retry at all): if Gemini fails or errors, fall
-# through to Groq immediately rather than trying Gemini twice first.
-# RETRY_BACKOFF_SECONDS is now unused in practice (kept, harmless, in case
-# a retry is ever reintroduced) since MAX_RETRIES=1 means the "retry" branch
-# in each loop below never executes.
+# Single attempt — a 429 won't clear in a short backoff, and a second try
+# on a slow/failing call just doubles wait. Transient 5xx can get one retry
+# only if MAX_RETRIES is raised again later.
 MAX_RETRIES = 1
 RETRY_BACKOFF_SECONDS = 0.6
 
-
-def _is_quota_error(e: genai_errors.ClientError) -> bool:
-    """429s from Gemini cover both the per-minute and per-day free-tier caps
-    (both confirmed live this project — see README Known Limitations).
-    Checked by status code, not message text, since the message wording
-    differs between the two."""
-    return getattr(e, "code", None) == 429
-
-# The Gemini key in use is on the free tier: 5 requests/minute for this model
-# (confirmed empirically via a live 429 RESOURCE_EXHAUSTED response). A live
-# conversation can easily produce a completed STT turn every 1-2 seconds,
-# which would blow through that in well under a minute. DEBOUNCE_SECONDS is
-# the minimum spacing enforced between Gemini calls: turns that complete
-# within the window are batched and summarized together the next time the
-# window opens, rather than firing one request per turn.
-#
-# Demo-speed tradeoff: 13s (5/min limit's 12s minimum + margin) made the
-# SECOND reply in a conversation (right after the first, immediate one)
-# feel unresponsive — exactly the "after I say the medicines" complaint,
-# since that turn is the one most likely to land inside this window.
-# Shortened to 5s for the demo: this will hit Gemini's rate limit sooner in
-# a fast back-to-back conversation, but that's fine now — a 429 falls
-# through to Groq immediately (fast, no wasted retry) rather than stalling.
-# Bump this back toward 12-13s post-demo if sustained conversations should
-# stay on Gemini rather than shifting load to Groq.
-DEBOUNCE_SECONDS = 5.0
+# Was 5.0 (and earlier 13.0) to stay under Gemini free-tier 5 req/min.
+# Groq's limit is far higher, so fire as soon as a turn completes. A short
+# coalesce still helps if AssemblyAI emits two end_of_turn messages back to
+# back; 0 means "no artificial wait after the patient stops talking."
+DEBOUNCE_SECONDS = 0.0
 
 Urgency = Literal["low", "medium", "high"]
 
@@ -294,16 +255,14 @@ class IntakeResult(BaseModel):
     # possibly-fallible judgment) so the UI/export can show which flags are
     # the non-negotiable kind.
     deterministic_flags: list[str] = Field(default_factory=list)
-    # Wall-clock time for the Gemini call itself (including any retries),
+    # Wall-clock time for the LLM call itself (including any retries),
     # NOT total time since the patient stopped talking — that also includes
-    # the debounce wait, which is separate and already surfaced via the
-    # "Finishing up..." status. Mislabeling this as total response time
-    # would overstate real-time performance.
+    # any debounce wait. Mislabeling this as total response time would
+    # overstate real-time performance.
     processing_time_ms: float
-    # Which provider actually served this response — "gemini_primary" in the
-    # normal case, "groq" only when Gemini failed. Surfaced purely for
-    # testing/observability (see logging in _extract), not shown to the patient.
-    served_by: Literal["gemini_primary", "groq"] = "gemini_primary"
+    # Which provider served this response. Single-provider (Groq) for now —
+    # kept as a field so logging/tests still stamp the source explicitly.
+    served_by: Literal["groq"] = "groq"
 
 
 SYSTEM_PROMPT = """\
@@ -441,21 +400,16 @@ class PatientInfo(BaseModel):
 class LLMPipeline:
     """
     Accumulates final transcript turns and re-summarizes them into a
-    structured IntakeSummary via Gemini Flash after each completed turn.
+    structured IntakeSummary via Groq after each completed turn.
 
-    Debouncing: on_turn() only ever acts on completed turns (partials are
-    already ignored), but a live conversation can still produce completed
-    turns faster than the free-tier Gemini quota allows. So on_turn() does
-    NOT call Gemini directly — it appends the new text and asks
-    _schedule_summarize() to either summarize now (if at least
-    DEBOUNCE_SECONDS have passed since the last call) or schedule a single
-    delayed summarize for when the window reopens, coalescing any turns that
-    arrive in between into one request. Call flush() to force an immediate
-    summarize (e.g. when the session ends) instead of waiting for the window.
+    Debouncing: on_turn() only acts on completed turns (partials ignored).
+    With DEBOUNCE_SECONDS at 0, summarize runs as soon as a turn completes.
+    A small non-zero value would still coalesce back-to-back end_of_turn
+    events into one request. Call flush() at session end to force any
+    pending summarize.
 
-    Trade-off: this means a high-urgency escalation can be detected up to
-    ~DEBOUNCE_SECONDS late, since urgency is only known after Gemini responds.
-    That's the deliberate cost of staying under the free-tier rate limit.
+    Concurrent turns while a call is in flight are serialized on
+    `_summarize_lock` so two overlapping replies don't race the UI.
 
     Usage:
         pipeline = LLMPipeline(
@@ -475,15 +429,13 @@ class LLMPipeline:
         patient_info: Optional[PatientInfo] = None,
         language: str = "ar",
     ) -> None:
-        if not GEMINI_API_KEY:
-            raise RuntimeError("GEMINI_API_KEY is not set. Add it to your .env file.")
+        if not GROQ_API_KEY:
+            raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env file.")
 
-        self._client = genai.Client(api_key=GEMINI_API_KEY)
-        self._groq_client = httpx.AsyncClient(timeout=30.0) if GROQ_API_KEY else None
-        # groq's structured-output schema is derived once from IntakeSummary
-        # (see _groq_json_schema) rather than per-call, since the schema
-        # itself never changes at runtime.
-        self._groq_schema = _groq_strict_schema(IntakeSummary.model_json_schema()) if GROQ_API_KEY else None
+        self._groq_client = httpx.AsyncClient(timeout=30.0)
+        # Groq's structured-output schema is derived once from IntakeSummary
+        # rather than per-call, since the schema never changes at runtime.
+        self._groq_schema = _groq_strict_schema(IntakeSummary.model_json_schema())
         self._on_summary = on_summary
         self._on_escalation = on_escalation
         self._debounce_seconds = debounce_seconds
@@ -496,24 +448,19 @@ class LLMPipeline:
 
         self._final_lines: list[str] = []
         self._lock = asyncio.Lock()
+        self._summarize_lock = asyncio.Lock()
         self.latest_result: Optional[IntakeResult] = None
-        # What Sina last said out loud, given to Gemini as context so a
-        # re-summarize over the whole accumulated transcript (which happens
-        # on every debounce window, not just once) doesn't repeat the same
+        # What Sina last said out loud, given as context so a re-summarize
+        # over the whole accumulated transcript doesn't repeat the same
         # greeting or question turn after turn.
         self._last_agent_reply: Optional[str] = None
 
-        # Which provider actually served the most recent _extract() call —
-        # read by summarize() right after to stamp the result (see
-        # IntakeResult.served_by). Reset at the top of each _extract() call.
-        self._last_served_by: str = "gemini_primary"
+        self._last_served_by: str = "groq"
 
         self._last_call_at: float = float("-inf")
         self._debounce_task: Optional[asyncio.Task] = None
-        # Guards against summarizing the same transcript twice in a row (e.g.
-        # an explicit flush() followed by another flush() from session
-        # teardown) — each such call would otherwise burn another scarce
-        # free-tier Gemini request for a result we already have.
+        # Guards against summarizing the same transcript twice in a row
+        # (e.g. flush() then teardown flush) — skip the duplicate call.
         self._last_summarized_transcript: Optional[str] = None
 
     def set_language(self, language: str) -> None:
@@ -561,16 +508,17 @@ class LLMPipeline:
         await self._run_summarize()
 
     async def _run_summarize(self) -> None:
-        loop = asyncio.get_event_loop()
-        self._last_call_at = loop.time()
+        async with self._summarize_lock:
+            loop = asyncio.get_event_loop()
+            self._last_call_at = loop.time()
 
-        async with self._lock:
-            transcript_so_far = "\n".join(self._final_lines)
-        if not transcript_so_far or transcript_so_far == self._last_summarized_transcript:
-            return
+            async with self._lock:
+                transcript_so_far = "\n".join(self._final_lines)
+            if not transcript_so_far or transcript_so_far == self._last_summarized_transcript:
+                return
 
-        self._last_summarized_transcript = transcript_so_far
-        await self.summarize(transcript_so_far)
+            self._last_summarized_transcript = transcript_so_far
+            await self.summarize(transcript_so_far)
 
     async def flush(self) -> Optional[IntakeResult]:
         """
@@ -578,7 +526,7 @@ class LLMPipeline:
         whatever transcript has accumulated. Use at session end so the last
         turns before hangup aren't left waiting for the debounce window.
 
-        A no-op (returns the cached result, no Gemini call) if the current
+        A no-op (returns the cached result, no LLM call) if the current
         transcript has already been summarized — safe to call more than
         once, e.g. once from an explicit client "end" and again from session
         teardown.
@@ -587,20 +535,21 @@ class LLMPipeline:
             self._debounce_task.cancel()
         self._debounce_task = None
 
-        async with self._lock:
-            transcript_so_far = "\n".join(self._final_lines)
-        if not transcript_so_far:
-            return None
-        if transcript_so_far == self._last_summarized_transcript:
-            return self.latest_result
+        async with self._summarize_lock:
+            async with self._lock:
+                transcript_so_far = "\n".join(self._final_lines)
+            if not transcript_so_far:
+                return None
+            if transcript_so_far == self._last_summarized_transcript:
+                return self.latest_result
 
-        self._last_summarized_transcript = transcript_so_far
-        loop = asyncio.get_event_loop()
-        self._last_call_at = loop.time()
-        return await self.summarize(transcript_so_far)
+            self._last_summarized_transcript = transcript_so_far
+            loop = asyncio.get_event_loop()
+            self._last_call_at = loop.time()
+            return await self.summarize(transcript_so_far)
 
     async def summarize(self, transcript: str) -> IntakeResult:
-        """Call Gemini Flash to (re)summarize the given transcript, apply the
+        """Call Groq to (re)summarize the given transcript, apply the
         deterministic escalation rule, and fire the registered callbacks."""
         start = asyncio.get_event_loop().time()
         summary = await self._extract(transcript)
@@ -609,10 +558,10 @@ class LLMPipeline:
         # API call whenever needs_human_review is true — medication names
         # are exactly the kind of thing that trips this) was doubling
         # latency on precisely the turn patients noticed most. Disabled for
-        # now to keep the demo snappy; the needs_human_review flag/reason
+        # now to keep replies snappy; the needs_human_review flag/reason
         # from the FIRST pass is still trusted and shown as-is instead of
         # being double-checked. Re-enable by uncommenting below if accuracy
-        # matters more than speed again post-demo.
+        # matters more than speed again.
         # if summary.needs_human_review:
         #     logger.info("needs_human_review on first pass (%s) — re-checking once", summary.review_reason)
         #     summary = await self._extract(transcript, recheck=True)
@@ -621,13 +570,13 @@ class LLMPipeline:
         elapsed_ms = (asyncio.get_event_loop().time() - start) * 1000
 
         # Deterministic red-flag check runs on the raw transcript, not
-        # Gemini's paraphrase — see DETERMINISTIC_RED_FLAGS docstring. Can
-        # only raise urgency/escalation, never lower what Gemini assessed.
+        # the LLM's paraphrase — see DETERMINISTIC_RED_FLAGS docstring. Can
+        # only raise urgency/escalation, never lower what the LLM assessed.
         deterministic_matches = _deterministic_red_flags(transcript)
         if deterministic_matches:
             if summary.urgency != "high":
                 logger.warning(
-                    "Deterministic red flag override: Gemini said urgency=%s, "
+                    "Deterministic red flag override: LLM said urgency=%s, "
                     "forcing 'high' for matches: %s", summary.urgency, deterministic_matches,
                 )
             summary.urgency = "high"
@@ -646,8 +595,8 @@ class LLMPipeline:
         )
         self.latest_result = result
         # Remembered so the NEXT call (re-summarizing the whole transcript
-        # again, per the debounce design) knows what was already said and
-        # doesn't repeat the same greeting/question.
+        # again) knows what was already said and doesn't repeat the same
+        # greeting/question.
         self._last_agent_reply = summary.agent_reply
 
         if result.escalate_to_interpreter:
@@ -681,23 +630,6 @@ class LLMPipeline:
             )
         return contents
 
-    async def _call_gemini(self, client: "genai.Client", contents: str):
-        return await client.aio.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=IntakeSummary,
-                # Latency fix: caps worst-case generation time. Typical
-                # output for this schema is well under half this; the cap
-                # only bites on a pathological runaway (e.g. clinical_notes
-                # rambling), trading a rare truncated-JSON retry for a much
-                # better normal-case tail latency.
-                max_output_tokens=1024,
-            ),
-        )
-
     async def _call_groq(self, contents: str) -> IntakeSummary:
         response = await self._groq_client.post(
             GROQ_API_URL,
@@ -716,77 +648,37 @@ class LLMPipeline:
                         "strict": True,
                     },
                 },
+                # No low max_tokens: gpt-oss-120b spends tokens on internal
+                # reasoning before the JSON, so a tight cap truncates the
+                # schema mid-object and Groq returns 400 (worse than a
+                # slightly longer successful reply).
             },
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         return IntakeSummary.model_validate_json(content)
 
-    async def _try_groq(self, contents: str) -> IntakeSummary:
-        """Tier 2 (final fallback): only reached once the Gemini key is
-        unavailable.
+    async def _extract(self, transcript: str, recheck: bool = False) -> IntakeSummary:
+        """Single-provider extract via Groq. No Gemini hop first."""
+        contents = self._build_contents(transcript, recheck)
+        self._last_served_by = "groq"
 
-        Latency fix: a 429 here means Groq's own rate/quota limit is hit —
-        that will not clear in the space of a short backoff, so retrying it
-        just burns time for no benefit (confirmed live: a real
-        quota-exhaustion outage kept 429ing on every retry). Only a
-        transient 5xx is worth one quick retry; a 429 fails fast instead.
-        With MAX_RETRIES=1 (see constant) there is no retry at all in
-        practice — this only matters if that's raised again later."""
         last_error: Optional[Exception] = None
         for attempt in range(MAX_RETRIES):
             try:
                 summary = await self._call_groq(contents)
-                logger.warning("Groq fallback succeeded.")
-                self._last_served_by = "groq"
+                logger.info("Groq extract succeeded (served_by=groq).")
                 return summary
             except httpx.HTTPStatusError as e:
                 last_error = e
                 logger.warning("Groq error on attempt %d/%d: %s", attempt + 1, MAX_RETRIES, e)
                 if e.response.status_code == 429:
-                    break  # rate/quota limit — retrying won't help, fail fast
+                    break  # rate/quota — retrying won't help
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
             except Exception as e:
                 last_error = e
                 break
-        assert last_error is not None
-        raise last_error
-
-    async def _extract(self, transcript: str, recheck: bool = False) -> IntakeSummary:
-        contents = self._build_contents(transcript, recheck)
-        self._last_served_by = "gemini_primary"
-
-        last_error: Optional[Exception] = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                response = await self._call_gemini(self._client, contents)
-                return IntakeSummary.model_validate_json(response.text)
-            except genai_errors.ServerError as e:
-                # Transient 503 "high demand" errors are common on Flash; back off and retry.
-                last_error = e
-                logger.warning(
-                    "Gemini ServerError on attempt %d/%d: %s", attempt + 1, MAX_RETRIES, e
-                )
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
-            except genai_errors.ClientError as e:
-                # A 429 (per-minute OR the daily cap, both confirmed live
-                # this project) won't resolve with a couple more seconds of
-                # backoff the way a 503 does, so don't burn the retry loop
-                # on the same exhausted key — go straight to Groq instead.
-                if _is_quota_error(e) and self._groq_client:
-                    logger.warning("Primary Gemini key hit quota (%s) — falling through to Groq", e)
-                    return await self._try_groq(contents)
-                raise
-
-        # Primary key exhausted its own retry budget on repeated 503s
-        # (not caught by the ClientError/quota branch above, since a
-        # ServerError never triggers the fallback-key path) — same
-        # "try the next tier before giving up" logic applies here.
-        if self._groq_client:
-            logger.warning("Primary Gemini key exhausted retries on 503s — falling through to Groq")
-            return await self._try_groq(contents)
 
         assert last_error is not None
         raise last_error

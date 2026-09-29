@@ -2,6 +2,5 @@ fastapi
 uvicorn[standard]
 websockets
 python-dotenv
-google-genai
 elevenlabs
 httpx
